@@ -19,6 +19,10 @@ workspace per deployment. Bring your own AI account; provider and hosting charge
 may apply. Start on your computer, then choose cloud hosting if you need it available
 while your computer is off.
 
+> **Hurray for free users!** Gemini offers a [free API tier](https://ai.google.dev/gemini-api/docs/pricing)
+> for eligible models, so you can try myGymBro with sample data and no AI usage
+> charges within Google's quotas. See the [setup and privacy conditions](#quickstart-local).
+
 [Get started](#quickstart-local) · [See all commands](#commands) · [Understand your data](./docs/privacy.md)
 
 ## Less tracking friction, more useful history
@@ -194,10 +198,16 @@ Follow these steps once. You do not need to clone, pull, push, or upload anythin
 
    **Choose one AI provider:**
 
-   **Gemini — browser setup.** Get an API key from
-   [Google AI Studio](https://aistudio.google.com/apikey). For real personal fitness data,
-   use a project with billing enabled; Google's unpaid-service terms restrict submitting
-   personal or sensitive information, with regional exceptions.
+   **Gemini — free tier available.** Get an API key from
+   [Google AI Studio](https://aistudio.google.com/apikey). Eligible models offer free input
+   and output tokens within Google's free-tier quotas, with no paid AI subscription
+   needed for that option. Check current [pricing](https://ai.google.dev/gemini-api/docs/pricing)
+   and your project's [rate limits](https://ai.google.dev/gemini-api/docs/rate-limits).
+
+   **Use fictional or non-personal data for free-tier trials.** Google's unpaid-service
+   terms allow inputs and replies to be used for product improvement and prohibit
+   submitting personal, sensitive, or confidential information. For your own personal
+   fitness records, use a project with billing enabled; regional exceptions apply.
    [Read Google's data terms](https://ai.google.dev/gemini-api/terms).
 
    **OpenAI — API key.** Create an API key in the
@@ -436,11 +446,12 @@ No. Internal integrations work on Notion's free plan. The agent builds and maint
 entire workspace itself; you just create the integration and share one page with it.
 
 **What does it cost to run?**
-There is no myGymBro subscription fee. You pay any AI provider usage and, if you choose
-cloud hosting, that provider's compute/storage charges. Running on your laptop avoids a
-separate hosting bill but uses its resources and requires it to stay on. Voice transcription
-through an API adds that provider's charges. Actual costs depend on your configuration
-and usage; the repo does not promise free or fixed-cost hosting.
+There is no myGymBro subscription fee. **Gemini offers free API usage on eligible models
+within its free-tier limits**, subject to the [data-privacy conditions](#quickstart-local)
+above. Higher quotas, paid-only models, other AI providers, cloud hosting/storage, and
+API voice transcription can cost money. Running on your laptop avoids a separate hosting
+bill but uses its resources and requires it to stay on. Actual costs depend on your
+configuration and usage; the repo does not promise free or fixed-cost hosting.
 
 **Which AI engine should I pick?**
 Choose from Claude (subscription token), Gemini, or OpenAI (API key). Each uses the same
