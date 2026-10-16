@@ -135,18 +135,6 @@ check-ins depend on your hosting and scheduler setup.
 
 Coaching starts in English and uses the goals, equipment, diet, and schedule you share.
 
-## Built on Oak. More ways to make your history useful.
-
-Oak provides the Telegram coaching foundation, including Notion, Calendar, voice,
-exercise lookup, and character personalities. myGymBro adds reusable food records,
-structured nutrition tracking, easier set-by-set logging, visual training reviews,
-and explicit training calculations. It also extends exercise references, coach
-customization, and AI-provider choices.
-
-The additions below are compared with [Oak's published source](https://github.com/FrancescoCoding/Oak/tree/b2d321549ce3ac2a49d0259a039a90352befc034).
-The examples are scripted and fictional. Try the four step-by-step stories in the
-[interactive feature walkthroughs](./showcase/README.md#feature-walkthroughs).
-
 ## Food Library: stop estimating the same food twice
 
 **Your usual foods become reusable references, so the next meal starts with saved
