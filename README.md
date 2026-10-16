@@ -179,8 +179,7 @@ message. Multiple sessions on the same date can stay in separate sections of one
 daily page, with later additions merged into that day's record.
 
 Next time, ask “What did I bench last time?” Your recorded sets give the coach a
-reference for the next conversation. This extends Oak's complete-session logging
-with a workflow designed for the pauses between sets.
+reference for the next conversation.
 
 ## Training reviews you can see
 
@@ -221,8 +220,8 @@ hold, or deload; estimates do not promise future performance.
 | **See a whole day's nutrition** | Log breakfast and dinner, then ask how much protein remains. | Daily Meal Log records and recorded totals against your stated targets. Meal photos remain estimates. |
 | **Keep your training vocabulary** | Ask the coach to keep using your familiar chest-supported row variation. | A persistent Notion Exercise Library of performed variations, alongside the inherited exercise lookup. |
 | **See consistency build** | Open Training Calendar after logging sessions. | A workout heatmap and dashboard context grounded in recorded dates, meals, and saved plans. |
-| **Make the delivery yours** | Use <code>/persona</code>, or <code>/create</code> to describe a dry-humour, supportive, or Brainrot voice. | In-chat selection and saved custom written voices. Oak's nine built-in characters remain part of the foundation. |
-| **Choose your AI account** | Select Gemini, OpenAI, or Claude during setup. | Gemini and OpenAI engine options alongside Oak's Claude path. Provider credentials, terms, and usage limits apply. |
+| **Make the delivery yours** | Use <code>/persona</code>, or <code>/create</code> to describe a dry-humour, supportive, or Brainrot voice. | In-chat selection and saved custom written voices. Nine built-in characters remain part of the foundation. |
+| **Choose your AI account** | Select Gemini, OpenAI, or Claude during setup. | Gemini and OpenAI engine options alongside Claude path. Provider credentials, terms, and usage limits apply. |
 | **Keep photos and corrections in context** | Send two food labels in an album with a mapping caption, or reply to the meal you are correcting. | Grouped album context and quoted-message context for the agent. It can ask when the mapping is unclear. |
 | **Clear a training cycle deliberately** | Use <code>/resetdata</code> to inspect the preview before confirming. | A guarded reset of tracked fitness records and weekly plans while retaining food/exercise libraries and references. |
 | **Explore before connecting accounts** | Walk through the Food Library, workout, report, and training-math stories. | A scripted interactive product demonstration using fictional data; it does not run the bot. |
