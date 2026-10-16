@@ -8,7 +8,7 @@ comments; this page explains each setting.
 ## Required
 
 For a first local chat, fill in the Telegram settings and **one** model credential.
-The [beginner guide](../README.md#quickstart-local) includes Gemini, Claude, and OpenAI setup steps.
+The [beginner guide](./getting-started.md#quickstart-local) includes Gemini, Claude, and OpenAI setup steps.
 You can leave Notion, Google Calendar, and webhook settings blank until you need them.
 
 | Variable | What it is |

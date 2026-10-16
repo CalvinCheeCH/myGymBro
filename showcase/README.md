@@ -2,7 +2,7 @@
 
 A responsive, interactive customer introduction. This is a standalone static site. Its chat and workspace previews use scripted examples and fictional records for Alex, with no connection to the running Telegram bot, AI providers, or Notion. The product itself is self-hosted, with one person, one profile, and one Notion workspace per deployment.
 
-The page links to the [GitHub repository](https://github.com/CalvinCheeCH/myGymBro) and [local setup guide](https://github.com/CalvinCheeCH/myGymBro#quickstart-local) so visitors can move from exploring the demo to setting up their own coach. Repository access follows its current visibility setting.
+The page links to the [GitHub repository](https://github.com/CalvinCheeCH/myGymBro) and [local setup guide](https://github.com/CalvinCheeCH/myGymBro/blob/master/docs/getting-started.md#quickstart-local) so visitors can move from exploring the demo to setting up their own coach. Repository access follows its current visibility setting.
 
 Run from the repository root:
 
