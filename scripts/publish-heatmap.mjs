@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * publish-heatmap.mjs: render the workout calendar heatmap from Workout Log
- * rows and write it to the "Training Calendar" page under the Hub (created on
- * first run if missing), plus a compact 12-week section on the Dashboard page
+ * rows and write it to the "Training Calendar" page in the workspace (created
+ * under Workout Log when available), plus a compact 12-week Dashboard section
  * so the homepage shows training at a glance. Run after a session is logged
  * so the calendar stays current, e.g.:
  *
@@ -13,12 +13,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { discoverWorkspace } from "./notion-layout.mjs";
 import {
   blocksToMarkdown,
   findProp,
   isoDate,
   markdownToBlocks,
   notion,
+  pageIsWithinHub,
   readProp,
   resolveDbId,
   startOfWeekUTC,
@@ -50,12 +52,14 @@ async function listChildren(blockId) {
     const qs = cursor ? `?start_cursor=${cursor}` : "";
     const res = await notion(`/blocks/${blockId}/children${qs}`);
     out.push(...(res.results ?? []));
+    if (res.has_more && !res.next_cursor)
+      throw new Error("Heatmap page discovery is incomplete: next_cursor is missing.");
     cursor = res.has_more ? res.next_cursor : undefined;
   } while (cursor);
   return out;
 }
 
-/** Hub page id, mirroring notion.mjs resolution (cache, env, pin file). */
+/** An explicit Hub pin takes precedence over cached workspace ids. */
 function hubId() {
   const cache = readCache();
   let pinned;
@@ -64,32 +68,52 @@ function hubId() {
   } catch {
     /* no pin file; env or cache must carry it */
   }
-  return normId(cache.__hub ?? process.env.NOTION_PARENT_PAGE_ID ?? pinned ?? "");
+  return normId(process.env.NOTION_PARENT_PAGE_ID ?? cache.__hub ?? pinned ?? "");
 }
 
-/** Find-or-create the Training Calendar child page under the Hub, then cache it. */
-async function trainingCalendarPage() {
+/** Recover a nested calendar before creating one; cached pages must remain in this Hub. */
+export async function trainingCalendarPage() {
   const cache = readCache();
+  const hub = hubId();
+  if (!hub) throw new Error("No Hub pinned. Set NOTION_PARENT_PAGE_ID or config/notion-hub.json.");
   if (cache.__trainingCalendar) {
     try {
-      await notion(`/pages/${cache.__trainingCalendar}`);
-      return cache.__trainingCalendar;
+      if (await pageIsWithinHub(cache.__trainingCalendar, hub)) return cache.__trainingCalendar;
     } catch {
       /* stale; re-resolve below */
     }
   }
-  const hub = hubId();
-  if (!hub) throw new Error("No Hub pinned. Set NOTION_PARENT_PAGE_ID or config/notion-hub.json.");
-  const existing = (await listChildren(hub)).find(
-    (b) => b.type === "child_page" && b.child_page?.title === "Training Calendar",
+  const { pages } = await discoverWorkspace(
+    (pathname, ...args) => notion(`/${pathname}`, ...args),
+    hub,
   );
+  const workouts = pages.filter(
+    (page) => page.title === "Workout Log" && normId(page.parentId) === hub,
+  );
+  if (workouts.length > 1)
+    throw new Error("Several Workout Log pages exist; refusing to guess the calendar location.");
+  const workoutPage =
+    workouts[0] ??
+    pages.find(
+      (page) =>
+        page.title === "Workout Log" &&
+        normId(page.id) === normId(cache.__workspacePages?.workouts),
+    );
+  const calendars = pages.filter((page) => page.title === "Training Calendar");
+  const nested = workoutPage
+    ? calendars.filter((page) => normId(page.parentId) === normId(workoutPage.id))
+    : [];
+  const candidates = nested.length ? nested : calendars;
+  if (candidates.length > 1)
+    throw new Error("Several Training Calendar pages exist; refusing to guess which to replace.");
+  const existing = candidates[0];
   if (existing) {
     cache.__trainingCalendar = existing.id;
     writeCache(cache);
     return existing.id;
   }
   const page = await notion("/pages", "POST", {
-    parent: { type: "page_id", page_id: hub },
+    parent: { type: "page_id", page_id: workoutPage?.id ?? hub },
     icon: { type: "emoji", emoji: "🗓️" },
     properties: { title: { title: [{ type: "text", text: { content: "Training Calendar" } }] } },
   });
@@ -146,20 +170,19 @@ export function findSectionIndex(children, title = SECTION_TITLE) {
   );
 }
 
-/** Dashboard page id from the cache, else the Hub's child page walk. */
-async function dashboardPage() {
+/** Dashboard page id, validating cached ancestry before mirroring private data. */
+export async function dashboardPage() {
   const cache = readCache();
+  const hub = hubId();
+  if (!hub) return null;
   const cached = cache.__dashboard?.pageId ?? cache.__dashboard;
   if (typeof cached === "string" && cached) {
     try {
-      await notion(`/pages/${cached}`);
-      return cached;
+      if (await pageIsWithinHub(cached, hub)) return cached;
     } catch {
       /* stale; re-resolve below */
     }
   }
-  const hub = hubId();
-  if (!hub) return null;
   const found = (await listChildren(hub)).find(
     (b) => b.type === "child_page" && b.child_page?.title === "Dashboard",
   );

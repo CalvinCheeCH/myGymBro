@@ -1,5 +1,5 @@
-import { initFeatureStories } from "./feature-stories.js";
 import { initChatDemo } from "./chat-demo.js";
+import { initFeatureStories } from "./feature-stories.js";
 import { initPersonaDemo } from "./persona-demo.js";
 import { initWorkspaceDemo } from "./workspace-demo.js";
 

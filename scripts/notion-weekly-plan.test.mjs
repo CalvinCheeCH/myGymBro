@@ -205,6 +205,38 @@ test("legacy dated plans stay readable and stale create-page calls save into the
   assert.equal(created[0].body.properties.title.title[0].text.content, "Weekly Plan");
 });
 
+test("legacy weekly-plan title variants fail before any API call", async (t) => {
+  mockNotion(t);
+  for (const title of [
+    "Weekly Plan: 20/09/2026 -26/09/2026",
+    "Week of 20/9 -26/9/2026 Training Plan",
+    "Upper Body Plan - Week39",
+  ]) {
+    await assert.rejects(
+      cmdCreatePage({ title, parent: KB, md: "- Existing instructions" }),
+      /weekly-plan --action save --week <Sunday YYYY-MM-DD>/,
+    );
+  }
+  assert.deepEqual(requests, []);
+});
+
+test("ordinary program and reference pages still use generic create-page", async (t) => {
+  mockNotion(t);
+  const titles = [
+    "Upper Body Program - Week39",
+    "Weekly Plan Reference",
+    "Upper Body Plan - Week39 Reference",
+  ];
+  for (const title of titles)
+    await cmdCreatePage({ title, parent: KB, md: "- Reference material" });
+  assert.deepEqual(
+    requests
+      .filter((request) => request.method === "POST" && request.pathname === "/pages")
+      .map((request) => request.body.properties.title.title[0].text.content),
+    titles,
+  );
+});
+
 test("failed plan body writes keep old plans and do not advertise an incomplete revision", async (t) => {
   addCanonicalPage();
   mockNotion(

@@ -11,9 +11,11 @@ const priorToken = process.env.NOTION_TOKEN;
 const priorHub = process.env.NOTION_PARENT_PAGE_ID;
 process.env.NOTION_TOKEN = "test-notion-token";
 process.chdir(fixture);
-const { resolveDbId, pageIsWithinHub, workspaceDatabases } = await import("./notion.mjs");
+const { resolveDbId, pageIsWithinHub, workspaceDatabases, cmdResolveWorkspace } = await import(
+  "./notion.mjs"
+);
 process.chdir(cwd);
-if (priorToken === undefined) delete process.env.NOTION_TOKEN;
+if (priorToken === undefined) Reflect.deleteProperty(process.env, "NOTION_TOKEN");
 else process.env.NOTION_TOKEN = priorToken;
 const HUB = "11111111111111111111111111111111";
 const FOOD = "22222222222222222222222222222222";
@@ -26,7 +28,7 @@ let parents;
 let children;
 let requests;
 beforeEach(() => {
-  delete process.env.NOTION_PARENT_PAGE_ID;
+  Reflect.deleteProperty(process.env, "NOTION_PARENT_PAGE_ID");
   parents = new Map([
     [FOOD, HUB],
     [RESOURCES, FOOD],
@@ -40,7 +42,7 @@ beforeEach(() => {
   fs.writeFileSync(path.join(fixture, "data/notion-ids.json"), JSON.stringify({ __hub: HUB }));
 });
 after(() => {
-  if (priorHub === undefined) delete process.env.NOTION_PARENT_PAGE_ID;
+  if (priorHub === undefined) Reflect.deleteProperty(process.env, "NOTION_PARENT_PAGE_ID");
   else process.env.NOTION_PARENT_PAGE_ID = priorHub;
   fs.rmSync(fixture, { recursive: true, force: true });
 });
@@ -58,7 +60,7 @@ function api(t, databaseParent = RESOURCES) {
       };
     else if (endpoint.startsWith("/blocks/"))
       body = { results: children.get(endpoint.split("/")[2]) ?? [], has_more: false };
-    else throw new Error("Unexpected test request " + endpoint);
+    else throw new Error(`Unexpected test request ${endpoint}`);
     return new Response(JSON.stringify(body), { status: 200 });
   });
 }
@@ -109,4 +111,37 @@ test("workspace discovery does not follow training rows or arbitrary imported pa
   children.get(HUB).push(childPage(OTHER, "Imported program"));
   await workspaceDatabases(HUB);
   assert.ok(!requests.includes(`/blocks/${OTHER}/children`));
+});
+
+test("workspace recovery rebuilds nested source and page aliases without creating pages", async (t) => {
+  const workouts = "66666666666666666666666666666666";
+  const calendar = "77777777777777777777777777777777";
+  const knowledge = "88888888888888888888888888888888";
+  const exercise = "99999999999999999999999999999999";
+  const meals = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  children.get(HUB).push(childPage(workouts, "Workout Log"), childPage(meals, "Meal Log"));
+  children.set(workouts, [childPage(calendar, "Training Calendar")]);
+  children.set(calendar, []);
+  children.set(meals, [
+    {
+      id: "summary",
+      type: "callout",
+      callout: { rich_text: [{ type: "text", text: { content: "Daily nutrition" } }] },
+    },
+  ]);
+  children.get(FOOD).push(childPage(knowledge, "Knowledge Base"));
+  children.set(knowledge, [childPage(exercise, "Exercise Library")]);
+  children.set(exercise, []);
+  api(t);
+  t.mock.method(console, "log", () => {});
+  await cmdResolveWorkspace();
+  const cache = JSON.parse(fs.readFileSync(path.join(fixture, "data/notion-ids.json"), "utf8"));
+  assert.equal(cache["Meal Log"], DB);
+  assert.equal(cache.__knowledgeBase, knowledge);
+  assert.equal(cache.__trainingCalendar, calendar);
+  assert.equal(cache.__exerciseLibrary, exercise);
+  assert.equal(cache.__workspacePages.meals, meals);
+  assert.equal(cache.__resources, RESOURCES);
+  assert.deepEqual(cache.__nutritionSummary, { pageId: meals, blockId: "summary" });
+  assert.ok(!requests.includes("/pages"));
 });

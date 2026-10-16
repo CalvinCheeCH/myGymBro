@@ -364,8 +364,8 @@ async function resolveDbId(dbRef) {
   const hub = hubId();
   let candidates;
   if (hub) {
-    // Deterministic: enumerate the Hub's direct children. A child_database
-    // block's id IS the database id.
+    // Enumerate the Hub's managed resource folders. A child_database block's
+    // id is the database id, including after the compact layout moves it.
     candidates = await workspaceDatabases(hub);
   } else {
     const found = await notion("/search", "POST", {
@@ -1374,7 +1374,7 @@ async function replaceManagedBlocks(containerId, blocks) {
 }
 
 /** Both summaries are calculated once from the same day; graphs are uploaded only to Notion. */
-async function cmdSyncNutrition(args = {}, columns) {
+async function cmdSyncNutrition(args, columns) {
   const date =
     args.now ??
     new Intl.DateTimeFormat("en-CA", {
@@ -2017,6 +2017,16 @@ async function cmdCreatePage(args) {
       file: args.file ?? args["body-file"],
     });
   }
+  const title = String(args.title ?? "").trim();
+  const weeklyPlanTitle =
+    /^weekly\s+plans?\b/i.test(title) ||
+    /^(?:week\s+of|plan\s+for\s+week)\s+\d/i.test(title) ||
+    /\bplan\s*[-:–—]?\s*week\s*\d{1,2}\b/i.test(title);
+  if (weeklyPlanTitle && !/\b(?:reference|library|benchmark|imported)\b/i.test(title)) {
+    throw new Error(
+      "Weekly plans belong in the persistent Weekly Plan page. Use weekly-plan --action save --week <Sunday YYYY-MM-DD> --md <plan> instead of create-page.",
+    );
+  }
   // --parent-name resolves a cached page key (e.g. __knowledgeBase) so callers
   // never need shell id-capture ($(), grep) to find the parent: that pattern
   // fails on Windows cmd.exe. Prefer it over --parent whenever the parent is
@@ -2065,32 +2075,65 @@ async function cmdResolveWorkspace() {
       'No Hub pinned. Set NOTION_PARENT_PAGE_ID or config/notion-hub.json ({"hubPageId": "..."}).',
     );
   }
-  const kids = await listChildren(hub);
+  const { discoverWorkspace, selectWorkspaceDatabase, WORKSPACE_PAGES } = await import(
+    "./notion-layout.mjs"
+  );
+  const discovery = await discoverWorkspace(
+    (endpoint, method) => notion(`/${endpoint}`, method),
+    hub,
+  );
   const cache = readCache();
   cache.__hub = hub;
-  const dbs = [];
-  for (const b of kids) {
-    if (b.type === "child_database") {
-      const title = b.child_database?.title ?? "";
-      if (title) {
-        cache[title] = b.id;
-        dbs.push(title);
-      }
-    }
-    if (b.type === "child_page" && b.child_page?.title === "Knowledge Base") {
-      cache.__knowledgeBase = b.id;
-    }
-    if (b.type === "child_page" && b.child_page?.title === "Training Calendar") {
-      cache.__trainingCalendar = b.id;
-    }
+  const pageId = (title, preferred) => {
+    const matches = discovery.pages.filter((page) => page.title === title);
+    const pinned = matches.find((page) => normId(page.id) === normId(preferred));
+    if (pinned) return pinned.id;
+    if (matches.length > 1)
+      throw new Error(`Several pages named ${title} exist; workspace recovery will not guess.`);
+    return matches[0]?.id;
+  };
+  const pages = {};
+  for (const page of WORKSPACE_PAGES) {
+    const id = pageId(page.title, cache.__workspacePages?.[page.key]);
+    if (id) pages[page.key] = id;
   }
-  if (cache.__knowledgeBase) {
-    const knowledgeChildren = await listChildren(cache.__knowledgeBase);
-    const exerciseLibrary = knowledgeChildren.find(
-      (block) => block.type === "child_page" && block.child_page?.title === "Exercise Library",
+  const resources =
+    pageId("Workspace Resources", cache.__resources) ?? pageId("Resources", cache.__resources);
+  if (resources) pages.resources = resources;
+  cache.__workspacePages = pages;
+  for (const [key, id] of Object.entries({
+    __knowledgeBase: pageId("Knowledge Base", cache.__knowledgeBase),
+    __trainingCalendar: pageId("Training Calendar", cache.__trainingCalendar),
+    __exerciseLibrary: pageId("Exercise Library", cache.__exerciseLibrary),
+    __weeklyPlan: pages.weeklyPlan,
+    __foodKnowledge: pages.foodKnowledge,
+    __resources: pages.resources,
+    __mealLogPage: pages.meals,
+  })) {
+    if (id) cache[key] = id;
+    else delete cache[key];
+  }
+  const dbs = [];
+  for (const title of [
+    "Programs",
+    "Goals",
+    "Body Stats",
+    "Workout Log",
+    "Meal Log",
+    "Food Library",
+  ]) {
+    const id = selectWorkspaceDatabase(discovery, title, cache, hub);
+    if (id) {
+      cache[title] = id;
+      dbs.push(title);
+    } else delete cache[title];
+  }
+  Reflect.deleteProperty(cache, "__nutritionSummary");
+  if (pages.meals) {
+    const summary = (await listChildren(pages.meals)).find(
+      (block) => block.type === "callout" && weeklyPlanText(block) === "Daily nutrition",
     );
-    if (exerciseLibrary) cache.__exerciseLibrary = exerciseLibrary.id;
-    else cache.__exerciseLibrary = undefined;
+    if (summary) cache.__nutritionSummary = { pageId: pages.meals, blockId: summary.id };
   }
   writeCache(cache);
   let dashboard = "not found";
@@ -2185,4 +2228,5 @@ export {
   cmdSyncNutrition,
   pageIsWithinHub,
   workspaceDatabases,
+  cmdResolveWorkspace,
 };
