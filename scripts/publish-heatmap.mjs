@@ -13,6 +13,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { findDashboardOverview } from "./notion-dashboard-layout.mjs";
 import { discoverWorkspace } from "./notion-layout.mjs";
 import {
   blocksToMarkdown,
@@ -196,13 +197,17 @@ export async function dashboardPage() {
  * never touched (only heading_2/divider/column_list boundaries stop the
  * delete sweep, and our content is paragraphs and a table).
  */
-async function syncDashboardSection(gridMd) {
+export async function syncDashboardSection(gridMd) {
   const dashId = await dashboardPage();
   if (!dashId) {
     console.log("Dashboard page not found; calendar page still updated.");
     return 0;
   }
   const kids = await listChildren(dashId);
+  if (findDashboardOverview(kids)) {
+    console.log("Dashboard overview owns its training calendar; separate calendar page updated.");
+    return 0;
+  }
   const idx = findSectionIndex(kids);
   if (idx !== -1) {
     let end = idx + 1;

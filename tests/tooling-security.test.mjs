@@ -40,6 +40,7 @@ mock.module("node:url", {
   },
 });
 const { executeCoachTool, PROJECT_ROOT } = await import("../dist/agent/tooling.js");
+const { flushVisualRefreshes, withVisualRefreshPaused } = await import("../dist/notion/refresh.js");
 assert.equal(PROJECT_ROOT, workspace);
 
 beforeEach(() => {
@@ -112,6 +113,78 @@ test("dashboard refresh preserves helper failure status for the reset completion
   const failure = await executeCoachTool("run_script", request, "42");
   assert.equal(failure.exitCode, 1);
   assert.equal(executions.length, 2);
+});
+
+test("agent visuals wait for reply flush while saves and authoritative totals stay synchronous", async () => {
+  for (const [script, args] of [
+    ["notion.mjs", ["sync-dashboard", "--now", "2026-10-16"]],
+    ["notion.mjs", ["sync-nutrition"]],
+    ["publish-heatmap.mjs", []],
+  ]) {
+    const result = await executeCoachTool("run_script", { script, args }, "42", {
+      deferVisuals: true,
+    });
+    assert.equal(result.queued, true);
+    assert.match(result.output, /confirms no saved records/);
+  }
+  assert.equal(executions.length, 0);
+  for (const args of [
+    ["log-meal", "--date", "2026-10-16"],
+    ["sum-day", "--db", "Meal Log"],
+  ]) {
+    const result = await executeCoachTool("run_script", { script: "notion.mjs", args }, "42", {
+      deferVisuals: true,
+    });
+    assert.equal(result.queued, undefined);
+    assert.equal(result.exitCode, undefined);
+  }
+  assert.equal(executions.length, 2);
+  await flushVisualRefreshes("42");
+  assert.equal(executions.length, 4);
+  assert.equal(path.basename(executions[2][0]), "notion.mjs");
+  assert.deepEqual(executions[2].slice(1), ["sync-dashboard"]);
+  assert.equal(path.basename(executions[3][0]), "publish-heatmap.mjs");
+});
+
+test("a failed source write is returned as failure and reset blocks model tools", async () => {
+  scriptError = Object.assign(new Error("synthetic write failed"), { code: 1 });
+  const result = await executeCoachTool(
+    "run_script",
+    { script: "notion.mjs", args: ["log-meal"] },
+    "42",
+    { deferVisuals: true },
+  );
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.queued, undefined);
+  assert.equal(executions.length, 1);
+  scriptError = undefined;
+  await flushVisualRefreshes("42");
+  assert.equal(executions.length, 2);
+  assert.deepEqual(executions[1].slice(1), ["sync-dashboard"]);
+  await withVisualRefreshPaused(async () => {
+    const blocked = await executeCoachTool(
+      "run_script",
+      { script: "notion.mjs", args: ["log-meal"] },
+      "42",
+      { deferVisuals: true },
+    );
+    assert.match(blocked.error, /reset is in progress/);
+  });
+  assert.equal(executions.length, 2);
+});
+
+test("log-meal automatically stages one optional refresh without an extra model tool call", async () => {
+  const result = await executeCoachTool(
+    "run_script",
+    { script: "notion.mjs", args: ["log-meal", "--date", "2026-10-16"] },
+    "42",
+    { deferVisuals: true },
+  );
+  assert.equal(result.exitCode, undefined);
+  assert.equal(executions.length, 1);
+  await flushVisualRefreshes("42");
+  assert.equal(executions.length, 2);
+  assert.deepEqual(executions[1].slice(1), ["sync-dashboard"]);
 });
 
 test("credential and infrastructure secret files are unavailable inside readable directories", async () => {

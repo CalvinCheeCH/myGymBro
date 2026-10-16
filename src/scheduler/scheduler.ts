@@ -5,6 +5,7 @@ import { type ModelTier, runAgent } from "../agent/runner.js";
 import { sendMessage } from "../channel/notify.js";
 import { isAllowed } from "../channel/permissions.js";
 import { config } from "../config.js";
+import { flushVisualRefreshes, isVisualRefreshPaused } from "../notion/refresh.js";
 import { writeJsonAtomic } from "../util/atomicfile.js";
 
 /**
@@ -143,23 +144,33 @@ export function getTask(id: string): ScheduledTask | undefined {
 /** Run a task now: invoke the agent with its prompt and push the result. */
 export async function executeTask(task: ScheduledTask): Promise<void> {
   // Stored polling tasks must respect recipients revoked since the last run.
-  if (!isAllowed(task.chatId)) return;
+  if (!isAllowed(task.chatId) || isVisualRefreshPaused()) return;
   console.log(`[scheduler] Running: ${task.name}`);
-  try {
-    await enqueueChatRun(task.chatId, async () => {
-      const response = await runAgent({
-        userMessage: task.prompt,
-        chatId: task.chatId,
-        userLabel: "scheduled task",
-        modelTier: task.modelTier ?? "standard",
-      });
-      await sendMessage(task.chatId, response.text || "(no output)");
-    });
-  } catch (err: any) {
+  const reportFailure = async (err: any) => {
     console.error(`[scheduler] Task ${task.name} failed:`, err.message);
     await sendMessage(task.chatId, `Scheduled task "${task.name}" failed: ${err.message}`).catch(
       () => {},
     );
+  };
+  try {
+    await enqueueChatRun(task.chatId, async () => {
+      try {
+        if (!isAllowed(task.chatId) || isVisualRefreshPaused()) return;
+        const response = await runAgent({
+          userMessage: task.prompt,
+          chatId: task.chatId,
+          userLabel: "scheduled task",
+          modelTier: task.modelTier ?? "standard",
+        });
+        await sendMessage(task.chatId, response.text || "(no output)");
+      } catch (error) {
+        await reportFailure(error);
+      } finally {
+        void flushVisualRefreshes(task.chatId);
+      }
+    });
+  } catch (err: any) {
+    await reportFailure(err);
   }
 }
 

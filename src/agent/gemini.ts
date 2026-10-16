@@ -81,7 +81,8 @@ export function assembleSystemPrompt(inputs: {
       "Telegram bot. The instructions below were written for a multi-tool coding",
       "assistant, so apply these substitutions:",
       "- You have restricted workspace tools, not a shell. Use `run_script` with one approved helper script and an argument array for Notion, calendar, reports, progression, and exercise lookups.",
-      '  For example: script="notion.mjs", args=["log", "--db", "Meal Log", "--set", "Meal=Chicken rice bowl"]. Pass complete data in one call; if a command errors, fix and retry with all values.',
+      '  For example: script="notion.mjs", args=["query-recent", "--db", "Workout Log"]. For meals, `log-meal` saves the meal and returns authoritative daily totals in one call. Pass complete data in one call. Retry a rejected write only when the helper confirms nothing was written. After an uncertain or partial write, inspect the existing row first; never blindly repeat an additive meal.',
+      "  Dashboard, nutrition, and heatmap refreshes are queued for after your reply. A queued display does not confirm that records were saved; confirm logging only from successful data writes and authoritative totals.",
       "  Use `read_file` and `write_file` for approved profile and knowledge files. Use `list_knowledge` and `move_knowledge` when importing knowledge. Do not attempt shell syntax, arbitrary commands, or unsupported file paths.",
       "- There is no web fetch/search tool. Say plainly when something would need",
       "  live web access instead of pretending.",
@@ -689,7 +690,9 @@ export async function runGeminiAgent(opts: {
           const resultParts: PromptPart[] = [];
           for (const call of calls) {
             toolCounts[call.name] = (toolCounts[call.name] ?? 0) + 1;
-            const response_ = await executeCoachTool(call.name, call.args ?? {}, chatId);
+            const response_ = await executeCoachTool(call.name, call.args ?? {}, chatId, {
+              deferVisuals: true,
+            });
             resultParts.push({
               functionResponse: { name: call.name, response: response_ },
             });

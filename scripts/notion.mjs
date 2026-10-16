@@ -44,6 +44,8 @@
  *   node scripts/notion.mjs append --page <pageId> --file plan.md
  *   node scripts/notion.mjs sync-dashboard --now 2026-06-30
  *   node scripts/notion.mjs sum-day --db "Meal Log" [--date 2026-06-30]
+ *   node scripts/notion.mjs log-meal --date 2026-10-16 --set "Meal Type=Lunch" \
+ *        --set "Calories (kcal)=450" --set "Protein (g)=25" --set "Source=Text" --body "- Meal details"
  *   node scripts/notion.mjs find-row --db "Meal Log" --date 2026-06-30
  *   node scripts/notion.mjs read-blocks --page <pageId>
  *   node scripts/notion.mjs archive --page <pageId>
@@ -55,6 +57,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { canonicalExerciseName } from "./exercise-aliases.mjs";
+import { findDashboardOverview } from "./notion-dashboard-layout.mjs";
 
 const TOKEN = process.env.NOTION_TOKEN;
 const NOTION_VERSION = process.env.NOTION_VERSION ?? "2022-06-28";
@@ -137,7 +140,7 @@ function writeCache(cache) {
   // (which readCache would silently swallow as {}, losing every resolved id and
   // causing duplicate databases on the next setup). Write to a temp file and
   // rename, which is atomic on the same filesystem.
-  const tmp = `${CACHE_FILE}.tmp`;
+  const tmp = `${CACHE_FILE}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(cache, null, 2));
   fs.renameSync(tmp, CACHE_FILE);
 }
@@ -431,7 +434,13 @@ async function resolveDashboard() {
   if (!page) {
     throw new Error("No Dashboard page found under the Hub. Run setup-workspace.mjs to build it.");
   }
-  const lists = (await listChildren(page.id)).filter((b) => b.type === "column_list");
+  const children = await listChildren(page.id);
+  const overview = findDashboardOverview(children);
+  // The warm display path is read-only locally, so background rendering cannot
+  // overwrite database IDs resolved by a meal command in another process.
+  if (overview)
+    return { pageId: page.id, layout: "overview", overviewBlockId: overview.id, columns: {} };
+  const lists = children.filter((b) => b.type === "column_list");
   const columns = { listId: lists[0]?.id };
   for (let r = 0; r < lists.length && r < TILE_ROWS.length; r++) {
     const ids = (await listChildren(lists[r].id)).map((c) => c.id);
@@ -590,9 +599,12 @@ async function ensureCalendarWeekOption(dbId, propertyName, weekName, def, dryRu
   return true;
 }
 
-async function buildProperties(dbId, sets, { fallbackDate, dryRun = false } = {}) {
-  const db = await notion(`/databases/${dbId}`);
-  const schema = db.properties ?? {};
+async function buildProperties(
+  dbId,
+  sets,
+  { fallbackDate, dryRun = false, schema: knownSchema } = {},
+) {
+  const schema = knownSchema ?? (await notion(`/databases/${dbId}`)).properties ?? {};
   const props = {};
   const dateProp = findProp(schema, (_name, def) => def.type === "date");
   const weekProp = findProp(
@@ -1373,8 +1385,265 @@ async function replaceManagedBlocks(containerId, blocks) {
   for (const id of oldIds) await notion(`/blocks/${id}`, "DELETE");
 }
 
+function dashboardDate(args) {
+  const date =
+    args.now ??
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: process.env.TIMEZONE ?? "Etc/UTC",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+    new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) !== date
+  )
+    throw new Error("Dashboard needs a valid YYYY-MM-DD date.");
+  return date;
+}
+
+/** Read each source once; this warm path never writes the shared ID cache. */
+async function dashboardModel(date) {
+  const cache = readCache();
+  const resourceId = cache.__resources ?? cache.__workspacePages?.resources;
+  if (!resourceId || !(await pageIsWithinHub(resourceId, hubId())))
+    throw new Error("Workspace resources are not verified under the pinned Hub. Run /setup first.");
+  const model = { date, weekStart: isoDate(startOfWeekSundayUTC(new Date(date))) };
+  const failures = [];
+  const number = (prop) =>
+    prop?.type === "number" && Number.isFinite(prop.number) ? prop.number : null;
+  const value = (row, schema, test) => readProp(row.properties?.[findProp(schema, test)]);
+  const numeric = (row, schema, text) =>
+    number(row.properties?.[findProp(schema, (n, d) => d.type === "number" && n.includes(text))]);
+  for (const name of ["Workout Log", "Meal Log", "Body Stats", "Goals", "Programs"]) {
+    try {
+      const id = cache[name];
+      if (!id) throw new Error("Source ID missing; run /setup first.");
+      const db = await notion(`/databases/${id}`);
+      if (normId(db.parent?.page_id) !== normId(resourceId))
+        throw new Error("Source database moved outside verified workspace resources.");
+      const schema = db.properties ?? {};
+      const dateProp = findProp(schema, (_n, d) => d.type === "date");
+      const query = {};
+      if (["Workout Log", "Meal Log", "Body Stats"].includes(name)) {
+        if (!dateProp) throw new Error("Source has no Date property.");
+        query.filter = {
+          property: dateProp,
+          date: name === "Meal Log" ? { equals: date } : { on_or_before: date },
+        };
+        query.sorts = [{ property: dateProp, direction: "descending" }];
+        if (name === "Workout Log")
+          query.filter = {
+            and: [
+              query.filter,
+              {
+                property: dateProp,
+                date: { on_or_after: isoDate(new Date(new Date(date).getTime() - 84 * 86400000)) },
+              },
+            ],
+          };
+      }
+      const rows = await queryAllRows(id, query);
+      if (name === "Workout Log") {
+        model.workouts = [];
+        for (const row of rows) {
+          const workout = {
+            date: String(readProp(row.properties?.[dateProp])).slice(0, 10),
+            duration: numeric(row, schema, "duration"),
+            sessions: numeric(row, schema, "session"),
+            focus: value(row, schema, (n) => n.includes("focus")),
+            status: value(row, schema, (n) => n.includes("status")),
+          };
+          if (row.properties?.[dateProp]?.date?.end || workout.sessions > 1) {
+            const { extractSessionDates } = await import("./publish-heatmap.mjs");
+            const dates = extractSessionDates(await blocksToMarkdown(row.id), workout.date);
+            if (!dates.length)
+              throw new Error(
+                "A legacy weekly row needs dated session headings before it can be charted accurately.",
+              );
+            model.workouts.push(
+              ...dates.map((sessionDate) => ({
+                ...workout,
+                date: sessionDate,
+                sessions: 1,
+                duration: null,
+              })),
+            );
+          } else model.workouts.push(workout);
+        }
+      }
+      if (name === "Body Stats")
+        model.bodyStats = rows.map((row) => ({
+          date: String(readProp(row.properties?.[dateProp])).slice(0, 10),
+          weight: numeric(row, schema, "bodyweight"),
+        }));
+      if (name === "Meal Log") {
+        const { summarizeNutrition } = await import("./notion-nutrition.mjs");
+        model.meals = rows.map((row) => ({
+          name: value(row, schema, (_n, d) => d.type === "title") || "Daily record",
+          kcal: numeric(row, schema, "calorie"),
+          protein: numeric(row, schema, "protein"),
+        }));
+        model.nutrition = summarizeNutrition(date, model.meals, readPersonalTargets());
+        model.dailyPageId = rows.length === 1 ? rows[0].id : undefined;
+        if (rows.length === 1) {
+          const body = await listChildren(rows[0].id);
+          const names = body.filter((b) => b.type === "bulleted_list_item").map(weeklyPlanText);
+          const occasions = body.filter((b) => b.type === "heading_2").map(weeklyPlanText);
+          if (names.length) {
+            model.meals[0].occasion = occasions.length === 1 ? occasions[0] : "Daily record";
+            model.meals[0].name = names.join(" · ");
+          }
+        }
+      }
+      if (name === "Goals")
+        model.goals = rows
+          .map((row) => ({
+            title: value(row, schema, (_n, d) => d.type === "title"),
+            current: numeric(row, schema, "current"),
+            target: numeric(row, schema, "target value"),
+            status: value(row, schema, (n) => n === "status"),
+          }))
+          .filter((row) => !/^(achieved|completed|cancelled|canceled|archived)$/i.test(row.status));
+      if (name === "Programs") {
+        const active = rows.find((row) =>
+          /^active$/i.test(value(row, schema, (n) => n === "status")),
+        );
+        model.program = active
+          ? { name: value(active, schema, (_n, d) => d.type === "title") }
+          : null;
+      }
+    } catch (error) {
+      failures.push(name);
+      console.error(`${name} overview unavailable: ${error.message}`);
+      if (name === "Meal Log") {
+        model.nutrition = undefined;
+        model.meals = undefined;
+      }
+      if (name === "Workout Log") model.workouts = undefined;
+    }
+  }
+  try {
+    const md = fs.readFileSync(path.resolve("PERSONAL.md"), "utf8");
+    const match = md.match(
+      /(?:training\s+(?:days|sessions)\s+per\s+week|weekly\s+(?:training|session)\s+target)\s*[:=]\s*(\d+)\b/i,
+    );
+    if (match && Number(match[1]) > 0 && Number(match[1]) <= 14)
+      model.trainingTarget = Number(match[1]);
+  } catch {
+    /* A missing training target stays unset. */
+  }
+  return { model, failures };
+}
+
+/** Update only this generated display; never traverse or rewrite the source logs. */
+async function updateOverviewImage(containerId, image, text, record) {
+  const children = await listChildren(containerId);
+  const current = children.find((b) => b.type === "image");
+  if (current) {
+    const { type: _type, ...update } = image;
+    await notion(`/blocks/${current.id}`, "PATCH", { image: update }, { version: "2026-03-11" });
+  } else
+    await notion(
+      `/blocks/${containerId}/children`,
+      "PATCH",
+      { children: [{ type: "image", image }] },
+      { version: "2026-03-11" },
+    );
+  const paragraph = children.find((b) => b.type === "paragraph");
+  if (paragraph)
+    await notion(`/blocks/${paragraph.id}`, "PATCH", { paragraph: { rich_text: rt(text) } });
+  else
+    await notion(`/blocks/${containerId}/children`, "PATCH", {
+      children: [{ type: "paragraph", paragraph: { rich_text: rt(text) } }],
+    });
+  if (record) {
+    const link = children.find(
+      (b) =>
+        b.type === "paragraph" &&
+        /^(Open \d{4}-\d{2}-\d{2}'s meal record|Daily summary · \d{4}-\d{2}-\d{2})$/.test(
+          weeklyPlanText(b),
+        ),
+    );
+    const rich_text = [
+      {
+        type: "text",
+        text: {
+          content: record.pageId
+            ? `Open ${record.date}'s meal record`
+            : `Daily summary · ${record.date}`,
+          ...(record.pageId
+            ? { link: { url: `https://www.notion.so/${normId(record.pageId)}` } }
+            : {}),
+        },
+      },
+    ];
+    if (link) await notion(`/blocks/${link.id}`, "PATCH", { paragraph: { rich_text } });
+  }
+}
+
+async function refreshOverview(args, dashboard) {
+  const started = Date.now();
+  const { model, failures } = await dashboardModel(dashboardDate(args));
+  const { renderDashboardPng, dashboardCaption } = await import("./notion-dashboard.mjs");
+  const { uploadPngImage, uploadNutritionImage, nutritionCaption } = await import(
+    "./notion-nutrition.mjs"
+  );
+  const renderStarted = Date.now();
+  const png = await renderDashboardPng(model);
+  const renderMs = Date.now() - renderStarted;
+  const caption = dashboardCaption(model);
+  const uploadId = await uploadPngImage(notion, png, "fitness-overview.png");
+  await updateOverviewImage(
+    dashboard.overviewBlockId,
+    { type: "file_upload", file_upload: { id: uploadId }, caption: rt(caption) },
+    caption,
+  );
+  if (model.nutrition) {
+    const cache = readCache();
+    const mealPage = cache.__workspacePages?.meals ?? cache.__mealLogPage;
+    if (!mealPage || !(await pageIsWithinHub(mealPage, hubId())))
+      throw new Error("Meal summary page is outside the pinned workspace.");
+    const summary = (await listChildren(mealPage)).find(
+      (b) => b.type === "callout" && weeklyPlanText(b) === "Daily nutrition",
+    );
+    if (!summary)
+      throw new Error("Meal Log is missing its Daily nutrition summary. Run /setup first.");
+    const nutritionUpload = await uploadNutritionImage(notion, model.nutrition);
+    await updateOverviewImage(
+      summary.id,
+      {
+        type: "file_upload",
+        file_upload: { id: nutritionUpload },
+        caption: rt(nutritionCaption(model.nutrition)),
+      },
+      model.nutrition.incomplete
+        ? "Some saved nutrition values are missing. The Dashboard and this page use the same available daily totals."
+        : "The Dashboard and this page use the same daily totals. Recorded intake is an estimate; missing logs do not mean you ate nothing.",
+      { date: model.date, pageId: model.dailyPageId },
+    );
+  }
+  console.log(
+    JSON.stringify({
+      refreshed: "Dashboard and Meal Log",
+      date: model.date,
+      renderMs,
+      durationMs: Date.now() - started,
+      unavailable: failures,
+    }),
+  );
+  if (failures.length)
+    throw new Error(`Dashboard refreshed with unavailable sources: ${failures.join(", ")}.`);
+}
+
 /** Both summaries are calculated once from the same day; graphs are uploaded only to Notion. */
-async function cmdSyncNutrition(args, columns) {
+async function cmdSyncNutrition(args, providedColumns) {
+  let columns = providedColumns;
+  if (!columns) {
+    const dashboard = await resolveDashboard();
+    if (dashboard.layout === "overview") return refreshOverview(args, dashboard);
+    columns = dashboard.columns;
+  }
   const date =
     args.now ??
     new Intl.DateTimeFormat("en-CA", {
@@ -1577,6 +1846,176 @@ async function getExerciseLibraryPageId() {
   return page.id;
 }
 
+/** One meal write plus checked daily totals, without a dashboard rebuild on the reply path. */
+async function cmdLogMeal(args) {
+  const date = args.date;
+  const parsedDate = new Date(`${date}T12:00:00Z`);
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(date ?? "") ||
+    !Number.isFinite(parsedDate.getTime()) ||
+    isoDate(parsedDate) !== date
+  ) {
+    throw new Error("log-meal requires --date YYYY-MM-DD from the Telegram date context.");
+  }
+  if (args.db && args.db !== "Meal Log") throw new Error("log-meal only writes to Meal Log.");
+  const md = args["body-file"] ? fs.readFileSync(args["body-file"], "utf8") : (args.body ?? "");
+  if (typeof md !== "string" || !md.trim())
+    throw new Error("log-meal requires a nonempty --body or --body-file.");
+  let mealBlocks = markdownToBlocks(normalizeDailyDayHeadings(md, date));
+  if (!mealBlocks.length) throw new Error("The meal body cannot be empty.");
+
+  const dbId = await resolveDbId("Meal Log");
+  const schema = (await notion(`/databases/${dbId}`)).properties ?? {};
+  const dateProp = findProp(schema, (_n, def) => def.type === "date");
+  const titleProp = findProp(schema, (_n, def) => def.type === "title");
+  const calories = findProp(
+    schema,
+    (name, def) => def.type === "number" && name.includes("calorie"),
+  );
+  const protein = findProp(
+    schema,
+    (name, def) => def.type === "number" && name.includes("protein"),
+  );
+  const occasionProp = findProp(schema, (name) => name === "meal type");
+  const sourceProp = findProp(schema, (name) => name === "source");
+  if (![dateProp, titleProp, calories, protein, occasionProp, sourceProp].every(Boolean)) {
+    throw new Error("Meal Log schema is incomplete; run /setup before saving a meal.");
+  }
+  const sets = args.set ?? [];
+  const values = new Map();
+  for (const pair of sets) {
+    if (typeof pair !== "string" || !pair.includes("="))
+      throw new Error('--set must be "Name=value".');
+    const at = pair.indexOf("=");
+    const name = pair.slice(0, at).trim();
+    const value = pair.slice(at + 1);
+    const def = schema[name];
+    if (!def)
+      throw new Error(`Property "${name}" not found. Have: ${Object.keys(schema).join(", ")}`);
+    if (values.has(name)) throw new Error(`Duplicate meal property: ${name}.`);
+    if (def.type === "title" || def.type === "date")
+      throw new Error(
+        "log-meal owns the daily title/date; use --date and omit title/date --set values.",
+      );
+    validateValue(name, def, value);
+    if (
+      def.type === "number" &&
+      (!value.trim() || !Number.isFinite(Number(value)) || Number(value) < 0)
+    ) {
+      throw new Error(`"${name}" needs a finite, nonnegative per-meal number, without += or >=.`);
+    }
+    values.set(name, value);
+  }
+  const missing = [calories, protein, occasionProp, sourceProp].filter(
+    (name) => !values.has(name) || !values.get(name).trim(),
+  );
+  if (missing.length) throw new Error(`Missing meal values: ${missing.join(", ")}.`);
+  const occasion = values.get(occasionProp);
+  const order = ["Breakfast", "Lunch", "Tea", "Dinner", "Supper"];
+  const blockText = (block) =>
+    (block[block.type]?.rich_text ?? [])
+      .map((part) => part.plain_text ?? part.text?.content ?? "")
+      .join("");
+  if (mealBlocks[0].type === "heading_2" && blockText(mealBlocks[0]) === occasion)
+    mealBlocks = mealBlocks.slice(1);
+  if (
+    !mealBlocks.length ||
+    mealBlocks.some((block) => block.type === "heading_2" && order.includes(blockText(block)))
+  ) {
+    throw new Error("The body must contain meal details for only the supplied Meal Type.");
+  }
+  const weekday = new Intl.DateTimeFormat("en-GB", { weekday: "long", timeZone: "UTC" }).format(
+    parsedDate,
+  );
+  const title = `${date.slice(8, 10)}/${date.slice(5, 7)}/${date.slice(2, 4)} (${weekday})`;
+  const createSets = [`${titleProp}=${title}`, `${dateProp}=${date}`, ...sets];
+  if (args["dry-run"]) {
+    const properties = await buildProperties(dbId, createSets, { schema, dryRun: true });
+    console.log(`Dry run: meal input validated, nothing written. ${JSON.stringify(properties)}`);
+    return { dryRun: true };
+  }
+  const rows = await queryAllRows(dbId, { filter: { property: dateProp, date: { equals: date } } });
+  if (rows.length > 1)
+    throw new Error(
+      `Meal Log has multiple daily rows for ${date}; nothing was written. Resolve the duplicate rows before logging another meal.`,
+    );
+  const row = rows[0];
+  if (
+    row &&
+    (row.properties?.[dateProp]?.date?.end ||
+      row.properties?.[dateProp]?.date?.start?.slice(0, 10) !== date)
+  ) {
+    throw new Error("The matching Meal Log row is not a single daily date; nothing was written.");
+  }
+  const previous = row ? await listChildren(row.id) : [];
+  const isOccasion = (block) => block.type === "heading_2" && order.includes(blockText(block));
+  const existing = previous.findLastIndex(
+    (block) => isOccasion(block) && blockText(block) === occasion,
+  );
+  let insertAt =
+    existing < 0
+      ? previous.findIndex(
+          (block) => isOccasion(block) && order.indexOf(blockText(block)) > order.indexOf(occasion),
+        )
+      : previous.findIndex((block, index) => index > existing && isOccasion(block));
+  if (insertAt < 0) insertAt = previous.length;
+  if (existing < 0)
+    mealBlocks.unshift({
+      object: "block",
+      type: "heading_2",
+      heading_2: { rich_text: rt(occasion) },
+    });
+  let afterId = insertAt > 0 ? previous[insertAt - 1].id : null;
+  let savedId;
+  try {
+    savedId = row
+      ? await cmdUpdate(
+          {
+            page: row.id,
+            set: sets.map((pair) => {
+              const at = pair.indexOf("=");
+              const name = pair.slice(0, at).trim();
+              const value = pair.slice(at + 1);
+              if (schema[name].type === "number") return `${name}=+=${value}`;
+              if (name.toLowerCase() === "notes" && schema[name].type === "rich_text") {
+                const previousNote = readProp(row.properties?.[name]);
+                return `${name}=${previousNote ? `${previousNote}\n` : ""}${value}`;
+              }
+              return pair;
+            }),
+          },
+          { page: row, schema },
+        )
+      : await cmdLog({ db: "Meal Log", set: createSets }, { dbId, schema });
+    for (let i = 0; i < mealBlocks.length; i += 100) {
+      const prepend = previous.length > 0 && insertAt === 0 && i === 0;
+      const result = await notion(
+        `/blocks/${savedId}/children`,
+        "PATCH",
+        {
+          children: mealBlocks.slice(i, i + 100),
+          ...(afterId ? { after: afterId } : prepend ? { position: { type: "start" } } : {}),
+        },
+        prepend ? { version: "2026-03-11" } : undefined,
+      );
+      afterId = result.results?.at(-1)?.id;
+      if (!afterId && i + 100 < mealBlocks.length)
+        throw new Error("Notion returned no last block ID for the remaining meal details.");
+    }
+    const summary = await cmdSumDay({ db: "Meal Log", date }, { dbId, schema, quiet: true });
+    if (summary.rows !== 1) throw new Error("The saved daily row could not be uniquely verified.");
+    const result = { pageId: savedId, ...summary };
+    console.log(`Meal saved: ${JSON.stringify(result)}`);
+    return result;
+  } catch (error) {
+    throw new Error(
+      savedId
+        ? `Meal row ${savedId} was saved, but its details or daily totals could not be completed. Check the existing row before trying again; do not log the meal twice. ${error.message}`
+        : `The meal write could not be verified and may have committed. Check ${date} in Meal Log before trying again; do not automatically retry. ${error.message}`,
+    );
+  }
+}
+
 /** Read or replace only the canonical Exercise Library note, keeping its target fixed. */
 async function cmdExerciseLibrary(args) {
   const pageId = await getExerciseLibraryPageId();
@@ -1606,8 +2045,8 @@ async function cmdExerciseLibrary(args) {
   console.log(`Replaced Exercise Library with ${blocks.length} blocks.`);
 }
 
-async function cmdLog(args) {
-  const dbId = await resolveDbId(args.db);
+async function cmdLog(args, { dbId: knownDbId, schema } = {}) {
+  const dbId = knownDbId ?? (await resolveDbId(args.db));
   // A row with no values is worse than no row: it pollutes the log and every
   // dashboard total derived from it. Refuse loudly rather than writing hollow
   // rows (this also catches shell-quoting mangling of --set arguments).
@@ -1618,7 +2057,10 @@ async function cmdLog(args) {
         "On Windows shells, double-quote each --set value; single quotes are not honoured.",
     );
   }
-  const properties = await buildProperties(dbId, sets, { dryRun: Boolean(args["dry-run"]) });
+  const properties = await buildProperties(dbId, sets, {
+    dryRun: Boolean(args["dry-run"]),
+    schema,
+  });
   // --dry-run validates and prints the parsed row without writing, so the coach
   // can read it back before committing (supports the "confirm before logging" flow).
   if (args["dry-run"]) {
@@ -1637,6 +2079,7 @@ async function cmdLog(args) {
   } else {
     console.log(`Logged row ${page.id}`);
   }
+  return page.id;
 }
 
 /**
@@ -1702,7 +2145,7 @@ async function cmdArchive(args) {
  * current number, "Prop=>=N" raises to N only if N is larger. Everything else
  * goes through the same coercion and validation as `log`.
  */
-async function cmdUpdate(args) {
+async function cmdUpdate(args, { page: knownPage, schema: knownSchema } = {}) {
   if (!args.page) throw new Error("--page <rowPageId> is required");
   const sets = (args.set ?? []).filter((s) => typeof s === "string" && s.trim());
   if (!sets.length) {
@@ -1711,10 +2154,10 @@ async function cmdUpdate(args) {
         "On Windows shells, double-quote each --set value.",
     );
   }
-  const page = await notion(`/pages/${args.page}`);
+  const page = knownPage ?? (await notion(`/pages/${args.page}`));
   const dbId = page.parent?.database_id;
   if (!dbId) throw new Error("--page must be a database row (it has no database parent).");
-  const schema = (await notion(`/databases/${dbId}`)).properties ?? {};
+  const schema = knownSchema ?? (await notion(`/databases/${dbId}`)).properties ?? {};
 
   const finalPairs = [];
   for (const pair of sets) {
@@ -1742,7 +2185,7 @@ async function cmdUpdate(args) {
 
   const dateProp = findProp(schema, (_name, def) => def.type === "date");
   const savedDate = page.properties?.[dateProp]?.date?.start?.slice(0, 10);
-  const properties = await buildProperties(dbId, finalPairs, { fallbackDate: savedDate });
+  const properties = await buildProperties(dbId, finalPairs, { fallbackDate: savedDate, schema });
   await notion(`/pages/${args.page}`, "PATCH", { properties });
   if (args.body || args["body-file"]) {
     let md = args["body-file"] ? fs.readFileSync(args["body-file"], "utf8") : args.body;
@@ -1754,6 +2197,7 @@ async function cmdUpdate(args) {
   } else {
     console.log(`Updated row ${args.page}`);
   }
+  return args.page;
 }
 
 async function cmdAppend(args) {
@@ -1822,10 +2266,10 @@ function chunkCount(md) {
  * and Protein. Deterministic on purpose: the totals the coach reports in chat
  * come from this query, not from model arithmetic over rows.
  */
-async function cmdSumDay(args) {
-  const dbId = await resolveDbId(args.db);
+async function cmdSumDay(args, { dbId: knownDbId, schema: knownSchema, quiet = false } = {}) {
+  const dbId = knownDbId ?? (await resolveDbId(args.db));
   const date = args.date ?? isoDate(new Date());
-  const schema = (await notion(`/databases/${dbId}`)).properties ?? {};
+  const schema = knownSchema ?? (await notion(`/databases/${dbId}`)).properties ?? {};
   const titleProp = findProp(schema, (_n, d) => d.type === "title");
   const dateProp = findProp(schema, (_n, d) => d.type === "date");
   const numProps = Object.keys(schema).filter((k) => schema[k].type === "number");
@@ -1835,20 +2279,23 @@ async function cmdSumDay(args) {
   const rows = await queryAllRows(dbId, {
     filter: { property: dateProp, date: { equals: date } },
   });
-  console.log(`Rows on ${date}: ${rows.length}`);
+  if (!quiet) console.log(`Rows on ${date}: ${rows.length}`);
   for (const pg of rows) {
     const name = readProp(pg.properties?.[titleProp]);
-    if (name) console.log(`- ${name}`);
+    if (name && !quiet) console.log(`- ${name}`);
   }
   const parts = [];
+  const totals = {};
   for (const prop of numProps) {
     const total = rows.reduce((sum, pg) => {
       const value = Number(readProp(pg.properties?.[prop]));
       return sum + (Number.isFinite(value) ? value : 0);
     }, 0);
+    totals[prop] = total;
     parts.push(`${prop}=${Math.round(total)}`);
   }
-  console.log(parts.length ? `Totals: ${parts.join(", ")}` : "Totals: none");
+  if (!quiet) console.log(parts.length ? `Totals: ${parts.join(", ")}` : "Totals: none");
+  return { date, rows: rows.length, totals };
 }
 
 /**
@@ -1858,6 +2305,13 @@ async function cmdSumDay(args) {
  * from the cached Dashboard column ids.
  */
 async function cmdRefreshTile(args) {
+  const dashboard = await resolveDashboard();
+  if (dashboard.layout === "overview")
+    throw new Error(
+      "The overview is generated from saved records. Use sync-dashboard instead of editing a tile.",
+    );
+  if (args.column && !Object.values(dashboard.columns).includes(args.column))
+    throw new Error("Column is not a verified Dashboard tile.");
   let columnId = args.column;
   if (!columnId && args.tile) {
     let cols = (await resolveDashboard()).columns ?? {};
@@ -1888,7 +2342,9 @@ async function cmdRefreshTile(args) {
  * chat header date (defaults to the system date).
  */
 async function cmdSyncDashboard(args) {
-  const cols = (await resolveDashboard()).columns ?? {};
+  const dashboard = await resolveDashboard();
+  if (dashboard.layout === "overview") return refreshOverview(args, dashboard);
+  const cols = dashboard.columns ?? {};
   if (!cols.thisWeek && !cols.goals && !cols.bodyStats) {
     throw new Error("Dashboard has no tile columns. Run setup-workspace.mjs first.");
   }
@@ -2156,6 +2612,7 @@ const COMMANDS = {
   "resolve-workspace": cmdResolveWorkspace,
   "query-recent": cmdQueryRecent,
   log: cmdLog,
+  "log-meal": cmdLogMeal,
   "find-row": cmdFindRow,
   "read-blocks": cmdReadBlocks,
   archive: cmdArchive,
@@ -2223,9 +2680,13 @@ export {
   renderNutritionTile,
   cmdWeeklyPlan,
   cmdCreatePage,
+  cmdLogMeal,
   findCurrentWeeklyPlanTitle,
   weeklyPlanEntryWeek,
   cmdSyncNutrition,
+  cmdSyncDashboard,
+  cmdRefreshTile,
+  dashboardModel,
   pageIsWithinHub,
   workspaceDatabases,
   cmdResolveWorkspace,

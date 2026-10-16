@@ -29,15 +29,31 @@ const FAST_PREFIXES = [
  * (e.g. "did my progress improve?", "dinner ideas for cutting?").
  */
 const QUESTION_OVERRIDE =
-  /[?]|\b(should i|what should|what|why|how|review|analys|analyze|explain|plan|recommend|suggest|advis|advice|injur|pain|sore|tired|feeling|goal|progress|report|compare|trend|motivat|idea|ideas|tip|tips)\b/;
+  /[?]|\b(should i|what should|can i|could i|would i|do i|did i|am i|is (?:it|this|that)|does (?:it|this|that)|what|why|how|review|analys|analyze|explain|plan|recommend|suggest|advis|advice|injur|pain|sore|tired|feeling|goal|progress|report|compare|trend|motivat|idea|ideas|tip|tips|enough|safe|question)\b/;
 
 /** Bare "60x12" style set notation: almost always a between-sets rapid log. */
 const SET_NOTATION = /\b\d+(\.\d+)?\s*[x×]\s*\d+\b/i;
+
+/** Meal logs use the light tier without opening or completing a workout clock. */
+export function isMealLog(text: string): boolean {
+  const lower = text.toLowerCase().trim();
+  if (lower.length >= 200 || QUESTION_OVERRIDE.test(lower) || SET_NOTATION.test(lower))
+    return false;
+  return (
+    /^(?:i\s+)?(?:just\s+)?(?:ate|had|drank|drink|makan|minum|dah)\b/.test(lower) ||
+    /^(?:my\s+)?(?:breakfast|lunch|dinner|supper|snack)\b/.test(lower) ||
+    /^(?:i\s+)?(?:log|logged|add|finished|completed|done)\s+(?:with\s+)?(?:my\s+)?(?:meal|breakfast|lunch|dinner|supper|snack|food|eating)\b/.test(
+      lower,
+    )
+  );
+}
 
 export function classifyQuery(text: string): ModelTier {
   const lower = text.toLowerCase().trim();
   const short = lower.length < 200;
   const questionLike = QUESTION_OVERRIDE.test(lower);
+
+  if (isMealLog(lower)) return "fast";
 
   // Short log-shaped messages go fast unless they ask something. FAST wins
   // over STANDARD here on purpose: "log meal prep" is a log, not advice.

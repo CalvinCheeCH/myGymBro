@@ -237,7 +237,7 @@ export async function runOpenAIAgent(opts: {
       for (const call of calls) {
         const args = JSON.parse(call.arguments || "{}");
         toolCounts[call.name] = (toolCounts[call.name] ?? 0) + 1;
-        const result = await executeCoachTool(call.name, args, chatId);
+        const result = await executeCoachTool(call.name, args, chatId, { deferVisuals: true });
         outputs.push({
           type: "function_call_output",
           call_id: call.call_id,

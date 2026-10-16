@@ -11,7 +11,9 @@ const priorToken = process.env.NOTION_TOKEN;
 const priorHub = process.env.NOTION_PARENT_PAGE_ID;
 process.env.NOTION_TOKEN = "test-notion-token";
 process.chdir(fixture);
-const { trainingCalendarPage, dashboardPage } = await import("./publish-heatmap.mjs");
+const { trainingCalendarPage, dashboardPage, syncDashboardSection } = await import(
+  "./publish-heatmap.mjs"
+);
 process.chdir(cwd);
 if (priorToken === undefined) Reflect.deleteProperty(process.env, "NOTION_TOKEN");
 else process.env.NOTION_TOKEN = priorToken;
@@ -124,4 +126,58 @@ test("legacy workspace without a Workout Log wrapper creates its calendar under 
   assert.equal(await trainingCalendarPage(), CREATED);
   const created = calls.find((call) => call.endpoint === "/pages" && call.method === "POST");
   assert.equal(created.body.parent.page_id, HUB);
+});
+
+test("overview marker prevents the legacy heatmap sweep from touching dashboard blocks", async (t) => {
+  api(t);
+  children.set(DASHBOARD, [
+    {
+      id: "calendar-heading",
+      type: "heading_2",
+      heading_2: { rich_text: [{ plain_text: "Training Calendar" }] },
+    },
+    {
+      id: "personal-note",
+      type: "paragraph",
+      paragraph: { rich_text: [{ plain_text: "Keep my personal note" }] },
+    },
+    {
+      id: "overview",
+      type: "callout",
+      callout: { rich_text: [{ plain_text: "Your daily overview" }] },
+      has_children: true,
+    },
+  ]);
+  assert.equal(await syncDashboardSection("A replacement grid"), 0);
+  assert.equal(
+    calls.some((call) => ["PATCH", "DELETE", "POST"].includes(call.method)),
+    false,
+  );
+});
+
+test("legacy dashboard still receives its separate heatmap when no overview marker exists", async (t) => {
+  api(t);
+  children.set(DASHBOARD, [
+    {
+      id: "calendar-heading",
+      type: "heading_2",
+      heading_2: { rich_text: [{ plain_text: "Training Calendar" }] },
+    },
+    { id: "old-grid", type: "table", table: {} },
+    {
+      id: "next-section",
+      type: "heading_2",
+      heading_2: { rich_text: [{ plain_text: "My own section" }] },
+    },
+  ]);
+  assert.ok((await syncDashboardSection("Updated calendar text")) > 0);
+  assert.deepEqual(
+    calls.filter((call) => call.method === "DELETE").map((call) => call.endpoint),
+    ["/blocks/calendar-heading", "/blocks/old-grid"],
+  );
+  assert.ok(
+    calls.some(
+      (call) => call.method === "PATCH" && call.endpoint === `/blocks/${DASHBOARD}/children`,
+    ),
+  );
 });

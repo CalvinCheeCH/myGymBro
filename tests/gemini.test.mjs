@@ -56,6 +56,8 @@ test("assembleSystemPrompt: includes engine notes, CLAUDE.md, PERSONAL.md, skill
   assert.match(md, /Skill playbook: coach-plugin\/skills\/log-meal\/SKILL.md/);
   assert.match(md, /Log meals carefully\./);
   assert.match(md, /Speak like a drill sergeant\./);
+  assert.match(md, /Retry a rejected write only when the helper confirms nothing was written/);
+  assert.match(md, /never blindly repeat an additive meal/);
 });
 
 test("assembleSystemPrompt: omits PERSONAL.md section when absent", () => {

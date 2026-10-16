@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { isVisualRefreshPaused, requestVisualRefresh } from "../notion/refresh.js";
 import { redactSecrets } from "../util/redact.js";
 
 const execFile = promisify(execFileCallback);
@@ -206,7 +207,21 @@ function validateScriptArgs(script: CoachScript, args: string[], chatId: string)
   }
 }
 
-async function runScript(args: Record<string, unknown>, chatId: string) {
+function queueVisualScript(script: CoachScript, args: string[], chatId: string): void {
+  const key = script === "publish-heatmap.mjs" ? "heatmap" : "dashboard";
+  const request =
+    key === "dashboard" ? { script: "notion.mjs", args: ["sync-dashboard"] } : { script, args };
+  requestVisualRefresh(chatId, key, async () => {
+    const result = await runScript(request, chatId);
+    if (result.exitCode) throw new Error(result.output);
+  });
+}
+
+async function runScript(
+  args: Record<string, unknown>,
+  chatId: string,
+  options: { deferVisuals?: boolean } = {},
+): Promise<{ output: string; exitCode?: string | number; queued?: boolean }> {
   const script = args.script as CoachScript;
   const scriptArgs = Array.isArray(args.args) ? args.args.map(String) : [];
   if (!SCRIPT_NAMES.includes(script)) throw new Error("That script is not available to the coach.");
@@ -214,6 +229,17 @@ async function runScript(args: Record<string, unknown>, chatId: string) {
     throw new Error("Script arguments exceed the workspace tool limits.");
   }
   validateScriptArgs(script, scriptArgs, chatId);
+  const visual =
+    script === "publish-heatmap.mjs" ||
+    (script === "notion.mjs" && ["sync-dashboard", "sync-nutrition"].includes(scriptArgs[0]));
+  if (options.deferVisuals && visual) {
+    queueVisualScript(script, scriptArgs, chatId);
+    return {
+      queued: true,
+      output:
+        "Display refresh queued for after your reply. This confirms no saved records; confirm logging only from successful save and totals results.",
+    };
+  }
   const scriptPath = path.join(PROJECT_ROOT, "scripts", script);
   try {
     const { stdout, stderr } = await execFile(process.execPath, [scriptPath, ...scriptArgs], {
@@ -228,6 +254,11 @@ async function runScript(args: Record<string, unknown>, chatId: string) {
     const e = error as Error & { code?: string | number; stdout?: string; stderr?: string };
     const output = `${e.stdout ?? ""}${e.stderr ? `\n${e.stderr}` : ""}`.trim() || e.message;
     return { exitCode: e.code ?? 1, output: redactSecrets(output).slice(0, 20_000) };
+  } finally {
+    // A meal can commit before a later body/totals request fails; refresh from current data.
+    if (options.deferVisuals && script === "notion.mjs" && scriptArgs[0] === "log-meal") {
+      queueVisualScript("notion.mjs", ["sync-dashboard"], chatId);
+    }
   }
 }
 
@@ -235,9 +266,15 @@ export async function executeCoachTool(
   name: string,
   args: Record<string, unknown>,
   chatId: string,
+  options: { deferVisuals?: boolean } = {},
 ): Promise<Record<string, unknown>> {
   try {
-    if (name === "run_script") return await runScript(args, chatId);
+    if (options.deferVisuals && isVisualRefreshPaused()) {
+      return {
+        error: "Workspace reset is in progress. Wait until it finishes before retrying this tool.",
+      };
+    }
+    if (name === "run_script") return await runScript(args, chatId, options);
     if (name === "read_file") {
       const filePath = getReadablePath(args.path);
       return { content: redactSecrets(fs.readFileSync(filePath, "utf8")).slice(0, 50_000) };
@@ -289,6 +326,6 @@ export async function executeCoachTool(
 }
 
 export const COACH_TOOL_INSTRUCTIONS =
-  "Use run_script with a supported script name and an argument array for Notion, calendar, reports, and exercise lookups. Do not use shell syntax. Use read_file and write_file for approved project profile/knowledge files; list_knowledge and move_knowledge handle knowledge imports. The tools cannot access secrets or run arbitrary commands.";
+  "Use run_script with a supported script name and an argument array for Notion, calendar, reports, and exercise lookups. notion.mjs log-meal saves a meal and returns authoritative daily totals. Display refreshes are queued until after your reply; queued displays do not confirm saved records. Confirm logging only from successful data writes and totals. Do not use shell syntax. Use read_file and write_file for approved project profile/knowledge files; list_knowledge and move_knowledge handle knowledge imports. The tools cannot access secrets or run arbitrary commands.";
 
 export { SCRIPT_NAMES };

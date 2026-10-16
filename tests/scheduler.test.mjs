@@ -3,6 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { mock, test } from "node:test";
+import {
+  flushVisualRefreshes,
+  requestVisualRefresh,
+  withVisualRefreshPaused,
+} from "../dist/notion/refresh.js";
 
 // The scheduler is the only place the agent talks to the user unprompted, so the
 // two side effects it owns (runAgent, sendMessage) are mocked and recorded.
@@ -37,6 +42,7 @@ mock.module("../dist/config.js", {
 const agentCalls = [];
 const sent = [];
 let agentBehaviour = () => ({ text: "session ready" });
+let deliveryBehaviour = () => {};
 
 mock.module("../dist/agent/runner.js", {
   namedExports: {
@@ -51,6 +57,7 @@ mock.module("../dist/channel/notify.js", {
   namedExports: {
     sendMessage: async (chatId, text) => {
       sent.push({ chatId, text });
+      await deliveryBehaviour();
     },
   },
 });
@@ -65,6 +72,7 @@ async function loadScheduler(opts = {}) {
   agentCalls.length = 0;
   sent.length = 0;
   agentBehaviour = opts.agent ?? (() => ({ text: "session ready" }));
+  deliveryBehaviour = opts.deliver ?? (() => {});
   return import(`../dist/scheduler/scheduler.js?instance=${instance}`);
 }
 
@@ -95,6 +103,91 @@ test("an empty agent response still sends something rather than a blank message"
   await scheduler.executeTask(task());
 
   assert.equal(sent[0].text, "(no output)");
+});
+
+test("scheduled optional displays start only after the reply is delivered", async () => {
+  const order = [];
+  let release;
+  const delivered = new Promise((resolve) => {
+    release = resolve;
+  });
+  const scheduler = await loadScheduler({
+    agent: () => {
+      order.push("saved");
+      requestVisualRefresh("42", "dashboard", async () => {
+        order.push("display");
+      });
+      return { text: "Saved the records." };
+    },
+    deliver: async () => {
+      order.push("reply-start");
+      await delivered;
+      order.push("reply-delivered");
+    },
+  });
+  const running = scheduler.executeTask(task());
+  await new Promise(setImmediate);
+  assert.deepEqual(order, ["saved", "reply-start"]);
+  release();
+  await running;
+  await flushVisualRefreshes("42");
+  assert.deepEqual(order, ["saved", "reply-start", "reply-delivered", "display"]);
+});
+
+test("reset pause prevents scheduled agents from writing while records are archived", async () => {
+  const scheduler = await loadScheduler();
+  await withVisualRefreshPaused(async () => {
+    await scheduler.executeTask(task());
+    assert.equal(agentCalls.length, 0);
+    assert.equal(sent.length, 0);
+  });
+  await scheduler.executeTask(task());
+  assert.equal(agentCalls.length, 1);
+});
+
+test("a failed turn delivers its error before the next turn and cannot flush that turn's display", async () => {
+  const order = [];
+  let releaseError;
+  let releaseReply;
+  const errorDelivered = new Promise((resolve) => {
+    releaseError = resolve;
+  });
+  const replyDelivered = new Promise((resolve) => {
+    releaseReply = resolve;
+  });
+  let turns = 0;
+  let deliveries = 0;
+  const scheduler = await loadScheduler({
+    agent: () => {
+      const turn = ++turns;
+      order.push(`turn-${turn}`);
+      requestVisualRefresh("42", "dashboard", async () => {
+        order.push(`display-${turn}`);
+      });
+      if (turn === 1) throw new Error("synthetic partial save");
+      return { text: "Second reply." };
+    },
+    deliver: async () => {
+      const delivery = ++deliveries;
+      order.push(`delivery-${delivery}-start`);
+      await (delivery === 1 ? errorDelivered : replyDelivered);
+      order.push(`delivery-${delivery}-done`);
+    },
+  });
+  const first = scheduler.executeTask(task({ id: "first" }));
+  const second = scheduler.executeTask(task({ id: "second" }));
+  await new Promise(setImmediate);
+  assert.deepEqual(order, ["turn-1", "delivery-1-start"]);
+  releaseError();
+  await first;
+  await new Promise(setImmediate);
+  assert.ok(order.includes("turn-2"));
+  assert.ok(order.includes("display-1"));
+  assert.equal(order.includes("display-2"), false);
+  releaseReply();
+  await second;
+  await flushVisualRefreshes("42");
+  assert.ok(order.indexOf("delivery-2-done") < order.indexOf("display-2"));
 });
 
 test("stored tasks cannot run or send reminders after a recipient is removed from the allowlist", async () => {

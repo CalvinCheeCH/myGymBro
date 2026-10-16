@@ -13,7 +13,7 @@
  *
  * Idempotent: existing databases/pages under the Hub are detected by title and
  * reused, never duplicated. All resolved ids (databases, hub, dashboard page,
- * and the Row 1 column ids used for tile updates) are written to
+ * and the managed overview block or legacy tile column ids) are written to
  * data/notion-ids.json so the agent and the notion.mjs helper can find them on
  * this instance. The committed code hardcodes no ids; they are per-workspace.
  *
@@ -28,6 +28,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
+  compactDashboardBody,
+  findDashboardOverview,
+  legacyDashboardDisplayIds,
+} from "./notion-dashboard-layout.mjs";
+import {
   compactWorkspaceLayout,
   ensureSourceViews,
   ensureWorkspacePages,
@@ -35,7 +40,6 @@ import {
   listLayoutChildren,
   selectWorkspaceDatabase,
   updateWorkspaceNavigation,
-  workspaceNavigation,
 } from "./notion-layout.mjs";
 
 const TOKEN = process.env.NOTION_TOKEN;
@@ -139,23 +143,10 @@ let layout;
 const RT = (t) => [{ type: "text", text: { content: t } }];
 const h2 = (t) => ({ type: "heading_2", heading_2: { rich_text: RT(t) } });
 const p = (t) => ({ type: "paragraph", paragraph: { rich_text: RT(t) } });
-const bul = (t) => ({ type: "bulleted_list_item", bulleted_list_item: { rich_text: RT(t) } });
 const div = () => ({ type: "divider", divider: {} });
-const pe = () => ({ type: "paragraph", paragraph: { rich_text: [] } });
 const box = (t, e, c = "default") => ({
   type: "callout",
   callout: { rich_text: RT(t), icon: { type: "emoji", emoji: e }, color: c },
-});
-const q = (t) => ({ type: "quote", quote: { rich_text: RT(t) } });
-// Column layout: children go INSIDE column_list, each column needs >=1 block.
-const colList = (...columns) => ({
-  type: "column_list",
-  column_list: {
-    children: columns.map((blocks) => ({
-      type: "column",
-      column: { children: blocks.length ? blocks : [pe()] },
-    })),
-  },
 });
 async function append(parentId, blocks) {
   for (let i = 0; i < blocks.length; i += 90) {
@@ -441,98 +432,26 @@ async function ensureTrainingCalendar() {
 
 async function ensureDashboard() {
   const pageId = cache.__workspacePages.dashboard;
-  const children = await listLayoutChildren(api, pageId);
-  if (children.length === 0) {
+  let children = await listLayoutChildren(api, pageId);
+  if (!findDashboardOverview(children) && (children.length === 0 || flag("rebuild-dashboard"))) {
+    const generated = flag("rebuild-dashboard")
+      ? await legacyDashboardDisplayIds(api, children, cache)
+      : new Set();
+    // Append first so a failed write cannot leave a cleared dashboard. Only
+    // positively identified legacy display blocks are removed, never user content.
     await buildDashboardBody(pageId);
-    console.log(`+ initialized Dashboard page (${pageId})`);
-  } else if (flag("rebuild-dashboard")) {
-    console.log(`~ rebuilding Dashboard page (${pageId})`);
-    // Explicit rebuild preserves linked child pages/databases and user data.
-    for (const block of children) {
-      if (block.type !== "child_page" && block.type !== "child_database")
-        await api(`blocks/${block.id}`, "DELETE");
-    }
-    await buildDashboardBody(pageId);
-  } else {
-    console.log(`= Dashboard page exists (${pageId})`);
+    for (const id of generated) await api(`blocks/${id}`, "DELETE");
+    children = await listLayoutChildren(api, pageId);
+    console.log(`+ compact Dashboard overview ready (${pageId})`);
   }
-  cache.__dashboard = { pageId, columns: await captureTileColumns(pageId) };
+  const overview = findDashboardOverview(children);
+  cache.__dashboard = overview
+    ? { pageId, layout: "overview", overviewBlockId: overview.id, columns: {} }
+    : { pageId, columns: await captureTileColumns(pageId) };
 }
 
 async function buildDashboardBody(pageId) {
-  // Keep navigation to the five daily-use pages. Supporting source databases
-  // remain reachable through Food & Knowledge's grouped resources.
-  await append(pageId, [
-    box("YOUR TRAINING HQ · real progress, one place", "🏋️", "blue_background"),
-    p(
-      "Log sessions and meals in Telegram. Your next-session card uses your saved plan and actual workout history.",
-    ),
-    workspaceNavigation(cache),
-    div(),
-  ]);
-  // Notion requires a column_list to contain at least two columns. Keep the
-  // live Next Session context first and pair it with a short progression cue.
-  await append(pageId, [
-    colList(
-      [
-        box("Next Session", "➡️", "purple_background"),
-        p("No workout context has been synced yet. Log a session or run /today to start."),
-      ],
-      [
-        box("Progression", "📈", "purple_background"),
-        p("Keep established exercise variations stable and progress from your actual logged sets."),
-        p("Use /today for the next session; use /plan to save the coming week's targets."),
-      ],
-    ),
-    div(),
-  ]);
-  // Row 2: This Week | Nutrition | Body Stats
-  await append(pageId, [
-    colList(
-      // Tile header colors are canonical; keep in sync with TILE_COLORS in notion.mjs.
-      [box("This Week", "📅", "gray_background"), bul("Log a session to populate this tile.")],
-      [
-        box("Nutrition", "🍽️", "green_background"),
-        p("Log a meal to see today's intake versus your targets."),
-      ],
-      [box("Body Stats", "⚖️", "red_background"), bul("Log a check-in to populate this tile.")],
-    ),
-    div(),
-  ]);
-  // Row 3: Goals | Active Program + Coach Note
-  await append(pageId, [
-    colList(
-      [box("Goals", "🎯", "brown_background"), bul("Add a goal to populate this tile.")],
-      [
-        box("Active Program", "📋", "yellow_background"),
-        p("Your current program and goals remain in Food & Knowledge's workspace resources."),
-        q(
-          "Progress the movements you actually do; change an exercise only when there is a clear reason.",
-        ),
-      ],
-    ),
-    div(),
-  ]);
-  // Row 4: compact commands, with Telegram remaining the logging surface.
-  await append(pageId, [
-    colList(
-      [
-        box("Quick Commands", "⚡", "default"),
-        bul("**/log** — log a workout (asks what you did)"),
-        bul("**/today** — today's recommended session"),
-        bul("**/plan** — build next week's plan to Notion"),
-        bul("**/report** — this week's report card; add monthly for the month-to-month view"),
-        bul("**/progress** — progress report from your logs"),
-        bul("**/commands** — see every available command"),
-      ],
-      [
-        box("Message Your Coach", "💬", "gray_background"),
-        p(
-          "Message naturally to log sets, record meals, update your profile, or ask a coaching question.",
-        ),
-      ],
-    ),
-  ]);
+  await append(pageId, compactDashboardBody(cache));
 }
 
 async function ensureKnowledgeBase() {
@@ -609,8 +528,8 @@ async function ensureExerciseLibrary() {
   cache.__exerciseLibrary = pageId;
 }
 
-/** Capture every Dashboard tile column id, row by row, keyed by tile name.
- *  Row order matches buildDashboardBody; keep TILE_ROWS in notion.mjs in sync. */
+/** Capture legacy Dashboard tile ids without upgrading an existing layout.
+ * Keep these old row names in sync with the legacy fallback in notion.mjs. */
 const TILE_ROWS = [
   ["nextSession", "progressionGuide"],
   ["thisWeek", "nutrition", "bodyStats"],

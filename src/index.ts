@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import { Bot } from "grammy";
+import { isMealLog } from "./agent/classify.js";
 import { QueueFullError, enqueueChatRun } from "./agent/coordinator.js";
 import { clearGeminiHistory, evictExpiredGemini } from "./agent/gemini.js";
 import { clearOpenAIHistory, evictExpiredOpenAI } from "./agent/openai.js";
@@ -33,6 +34,11 @@ import { registerTelegramWebhook, startWebhookServer } from "./channel/webhook-s
 import { checkClaudeAuth, config } from "./config.js";
 import { type Attachment, isSupportedAttachment } from "./media/attachments.js";
 import { transcribeAudio, transcriptionAvailable, warmupTranscriber } from "./media/transcribe.js";
+import {
+  flushVisualRefreshes,
+  isVisualRefreshPaused,
+  withVisualRefreshPaused,
+} from "./notion/refresh.js";
 import { type ResetSnapshot, archiveResetData, prepareReset } from "./notion/reset.js";
 import { notionConfigured } from "./notion/status.js";
 import { initScheduler } from "./scheduler/scheduler.js";
@@ -298,19 +304,21 @@ async function handle(opts: {
   // they are mechanical (gather context, one log --body, sum-day, sync), the
   // slim prompt keeps every instruction they need, and lite models are cheaper
   // and less demand-pressured than the flagships.
-  const final = attachments.length === 0 && isSessionFinal(text);
+  const mealLog = isMealLog(text);
+  const final = attachments.length === 0 && !mealLog && isSessionFinal(text);
   const modelTier = attachments.length === 0 ? (final ? "fast" : classifyQuery(text)) : "standard";
 
   // Rapid-fire path: ack in one Telegram send (hundreds of ms), accumulate in
   // the background on the per-chat chain. The background reply is delivered
   // only when it asks something (a parse question contains "?"); coaching
   // one-liners are suppressed so sets never double-ack.
-  const rapid = attachments.length === 0 && modelTier === "fast" && !final && isRapidFireLog(text);
+  const rapid =
+    attachments.length === 0 && modelTier === "fast" && !final && !mealLog && isRapidFireLog(text);
 
   // Session clock: any fast-tier message may open a session ("hill run ...
   // start" takes the normal path but still begins the workout). Refresh the
   // flag when sets stream in; expiry is enforced when "done" arrives.
-  if (!final && modelTier === "fast") {
+  if (!final && modelTier === "fast" && !mealLog) {
     const cur = sessionStarts.get(chatId);
     if (cur && Date.now() - cur.start > SESSION_CLOCK_MAX_MS) {
       sessionStarts.delete(chatId);
@@ -336,26 +344,34 @@ async function handle(opts: {
     rapidLedgers.set(chatId, { ledger: applied.ledger, updatedAt: Date.now() });
     saveRapidLedgers();
     await replyTo("Noted.").catch(() => {});
-    void enqueueChatRun(chatId, async () => {
-      const response = await runAgent({
-        userMessage: text,
-        chatId,
-        userLabel,
-        modelTier,
-        attachments,
-        onProgress: undefined,
-      });
-      if (response.text?.includes("?") || isCorrectionConfirm(response.text ?? "")) {
-        await replyTo(response.text).catch(() => {});
-      }
-    }).catch(async (err: any) => {
+    const reportFailure = async (err: any) => {
       console.error("[index] Background rapid-fire run failed:", err?.message);
       await replyTo(
         err instanceof QueueFullError
           ? "Your sets are kept in this workout's ledger. Coaching is busy; send done once it clears to save the session."
           : "Hmm, that last one may not have saved. Send it again and I will make sure it sticks.",
       ).catch(() => {});
-    });
+    };
+    void enqueueChatRun(chatId, async () => {
+      try {
+        if (isVisualRefreshPaused()) throw new Error("Workspace reset is in progress.");
+        const response = await runAgent({
+          userMessage: text,
+          chatId,
+          userLabel,
+          modelTier,
+          attachments,
+          onProgress: undefined,
+        });
+        if (response.text?.includes("?") || isCorrectionConfirm(response.text ?? "")) {
+          await replyTo(response.text).catch(() => {});
+        }
+      } catch (error) {
+        await reportFailure(error);
+      } finally {
+        void flushVisualRefreshes(chatId);
+      }
+    }).catch(reportFailure);
     return;
   }
 
@@ -402,21 +418,7 @@ async function handle(opts: {
 
   // Join the shared queue so messages and scheduled work cannot overlap a chat
   // session, and provider concurrency remains bounded.
-  try {
-    await enqueueChatRun(chatId, async () => {
-      const response = await runAgent({
-        userMessage: outbound,
-        chatId,
-        userLabel,
-        modelTier,
-        attachments,
-        onProgress: undefined,
-      });
-      await replyTo(response.text || "(no response)");
-      if (final) sessionStarts.delete(chatId);
-      if (final) clearRapidLedger(chatId);
-    });
-  } catch (err: any) {
+  const reportFailure = async (err: any) => {
     clearInterval(typingTimer);
     console.error("[index] Agent error:", err?.message, err?.stack);
     await replyTo(
@@ -424,6 +426,30 @@ async function handle(opts: {
         ? "I have too many requests queued. Please try again shortly."
         : classifyError(err?.message ?? "unknown error"),
     );
+  };
+  try {
+    await enqueueChatRun(chatId, async () => {
+      try {
+        if (isVisualRefreshPaused()) throw new Error("Workspace reset is in progress.");
+        const response = await runAgent({
+          userMessage: outbound,
+          chatId,
+          userLabel,
+          modelTier,
+          attachments,
+          onProgress: undefined,
+        });
+        await replyTo(response.text || "(no response)");
+        if (final) sessionStarts.delete(chatId);
+        if (final) clearRapidLedger(chatId);
+      } catch (error) {
+        await reportFailure(error);
+      } finally {
+        void flushVisualRefreshes(chatId);
+      }
+    });
+  } catch (err: any) {
+    await reportFailure(err);
   } finally {
     clearInterval(typingTimer);
   }
@@ -431,6 +457,8 @@ async function handle(opts: {
 
 function classifyError(msg: string): string {
   const lower = msg.toLowerCase();
+  if (lower.includes("workspace reset"))
+    return "Workspace reset is in progress. Send your message again when it finishes.";
   if (lower.includes("usage limit") || lower.includes("credit balance is too low"))
     return "I have hit the Claude subscription usage limit. It resets on a rolling window, so try again shortly.";
   if (lower.includes("timeout") || lower.includes("timed out"))
@@ -561,7 +589,7 @@ bot.on("message", async (ctx) => {
   const userLabel = ctx.from?.username ? `@${ctx.from.username}` : `user ${userId}`;
   let text = ctx.message.text ?? ctx.message.caption ?? "";
 
-  if (activeDataResets.has(chatId)) {
+  if (activeDataResets.has(chatId) || isVisualRefreshPaused()) {
     await ctx.reply("Workspace reset is in progress. Send your next message when it finishes.");
     return;
   }
@@ -623,27 +651,31 @@ bot.on("message", async (ctx) => {
 
         pendingDataResets.delete(chatId);
         activeDataResets.add(chatId);
-        freshChat(chatId);
         try {
-          await replyTo(
-            "Reset started. I’m archiving the previewed Notion rows, saved weekly plan entries, and older plan pages, then removing the previewed one-off workout events.",
-          );
-          const result = await archiveResetData(pending.snapshot);
-          const total = Object.values(result.databases).reduce((sum, count) => sum + count, 0);
-          const summary = Object.entries(result.databases)
-            .map(([name, count]) => `${name}: ${count}`)
-            .join("\n");
-          const refreshed = await executeCoachTool(
-            "run_script",
-            { script: "notion.mjs", args: ["sync-dashboard"] },
-            chatId,
-          );
-          const refreshWarning =
-            refreshed.error || refreshed.exitCode
-              ? "\n\nThe reset completed, but page summaries did not finish refreshing. Displayed charts may still show old values. Ask me to refresh the dashboard when Notion is available."
-              : "";
-          await replyTo(
-            `Reset complete. Archived ${total} database row(s), ${result.weeklyPlanEntries} saved weekly plan ${result.weeklyPlanEntries === 1 ? "entry" : "entries"}, ${result.weeklyPlanPages} older weekly plan page(s), and deleted ${result.calendarEvents} one-off workout event(s).\n\nRows by database:\n${summary}\n\nMain workspace pages, Food Library, the Exercise Library, imported reference pages, recurring calendar events, bot settings, profile, and reminders were kept. Telegram messages were not changed; clear those in the Telegram app if you want them gone.${result.calendarConfigured ? "" : "\nGoogle Calendar was not configured, so calendar events were not checked or deleted."}${refreshWarning}`,
+          await withVisualRefreshPaused(() =>
+            enqueueChatRun(chatId, async () => {
+              freshChat(chatId);
+              await replyTo(
+                "Reset started. I’m archiving the previewed Notion rows, saved weekly plan entries, and older plan pages, then removing the previewed one-off workout events.",
+              );
+              const result = await archiveResetData(pending.snapshot);
+              const total = Object.values(result.databases).reduce((sum, count) => sum + count, 0);
+              const summary = Object.entries(result.databases)
+                .map(([name, count]) => `${name}: ${count}`)
+                .join("\n");
+              const refreshed = await executeCoachTool(
+                "run_script",
+                { script: "notion.mjs", args: ["sync-dashboard"] },
+                chatId,
+              );
+              const refreshWarning =
+                refreshed.error || refreshed.exitCode
+                  ? "\n\nThe reset completed, but page summaries did not finish refreshing. Displayed charts may still show old values. Ask me to refresh the dashboard when Notion is available."
+                  : "";
+              await replyTo(
+                `Reset complete. Archived ${total} database row(s), ${result.weeklyPlanEntries} saved weekly plan ${result.weeklyPlanEntries === 1 ? "entry" : "entries"}, ${result.weeklyPlanPages} older weekly plan page(s), and deleted ${result.calendarEvents} one-off workout event(s).\n\nRows by database:\n${summary}\n\nMain workspace pages, Food Library, the Exercise Library, imported reference pages, recurring calendar events, bot settings, profile, and reminders were kept. Telegram messages were not changed; clear those in the Telegram app if you want them gone.${result.calendarConfigured ? "" : "\nGoogle Calendar was not configured, so calendar events were not checked or deleted."}${refreshWarning}`,
+              );
+            }),
           );
         } catch (err) {
           console.error("[resetdata] Notion reset failed:", (err as Error).message);
@@ -872,6 +904,16 @@ setInterval(evictExpiredOpenAI, 15 * 60 * 1000);
   startSchedulerServer();
   await initScheduler();
   await bot.init();
+  if (notionConfigured()) {
+    const refreshChat = config.ownerChatId || "startup";
+    await executeCoachTool(
+      "run_script",
+      { script: "notion.mjs", args: ["sync-dashboard"] },
+      refreshChat,
+      { deferVisuals: true },
+    );
+    void flushVisualRefreshes(refreshChat);
+  }
 
   if (config.mode === "webhook") {
     // Scale-to-zero path: Telegram pushes updates to the HTTP server, and an

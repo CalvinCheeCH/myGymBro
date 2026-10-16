@@ -25,7 +25,7 @@ Relations force the order: a database referenced by a relation must exist first.
    Programs), **Meal Log**, and **Food Library**, reusing the original source ids.
 3. An initial Programs row, only if Programs is empty.
 4. **Knowledge Base**, its **Exercise Library**, and **Training Calendar**.
-5. Empty, data-neutral overview bodies and the Dashboard tile layout.
+5. Empty, data-neutral overview bodies and the visual Dashboard container.
 6. Linked Workout Log, Meal Log, and Food Library tables using the original data
    sources. No meal, workout, measurement, or goal examples are seeded.
 
@@ -131,34 +131,24 @@ so repeat foods converge on label truth instead of fresh guesses.
 
 ## Dashboard
 
-A page (not a database): a data-neutral hero, one compact linked navigation
-row, a two-column Next Session/progression row, compact weekly/nutrition/body
-stat tiles, goals/program tiles, quick commands and message-coach guidance,
-then a Training Calendar section. Keep the dashboard truthful before any logs
-exist; never seed sample program dates, workout counts, or measurements as if
-they were live data:
+A page with five-page navigation and one managed `Your daily overview` callout.
+It contains a locally rendered PNG and a plain-text summary: training, calorie
+and protein rings, latest bodyweight and trend, weekly duration bars, a 12-week
+training heatmap, meals, goals, and the active program. Empty or unreadable data
+is labelled explicitly; no sample intake, training target, or bodyweight is seeded.
 
-- Hero: blue callout with a short purpose statement and a note that tiles reflect
-  saved Notion records
-- Navigation: Dashboard, Workout Log, Meal Log, Weekly Plan, and Food & Knowledge.
-  Source databases and supporting records are reached inside those pages.
-- Row 1: 2 columns (Next Session, Progression). Notion requires at least two
-  columns in a column list; the primary Next Session card comes first.
-  `sync-dashboard` derives its
-  context from the most recently logged actual sets and checks for the exact
-  current-week dated entry on the single **Weekly Plan** page. If workout history cannot be
-  read, it displays an explicit unavailable state instead of stale sets.
-- Row 2: 3 columns (This Week, Nutrition, Body Stats). Daily nutrition uses calorie
-  and protein rings against the targets in `PERSONAL.md`, mirrored above the Meal
-  Log's recorded days. Both use the same dated totals. PNGs are rendered locally
-  and uploaded directly to Notion; no chart-rendering service receives meal data.
-- Row 3: 2 columns (Goals, Active Program + progression guidance)
-- Row 4: 2 columns (Quick Commands, Message Your Coach)
-- Training Calendar section: `## Training Calendar` heading plus a compact
-  12-week heatmap grid, mirrored here by every `publish-heatmap.mjs` run so
-  the homepage shows training without opening the full 26-week page. The
-  section is deleted and re-appended on each publish; tile columns are never
-  touched.
+`sync-dashboard` reads the original sources and renders the overview using Sharp.
+It uploads directly to Notion, using no AI tokens or external chart service for
+the graphics. The Meal Log summary uses the same day's calculated nutrition.
+`publish-heatmap.mjs` still maintains the full Training Calendar but skips its
+old Dashboard mirror when this overview exists.
+
+During coaching, display commands are queued until after the Telegram reply.
+Source writes and verified daily totals complete before save confirmation.
+One background writer coalesces refresh requests and rereads current data;
+reset pauses and drains that writer before archiving records. A failed optional
+refresh is logged and retried on a later request or startup; it does not undo a
+saved meal. The previous dated image can remain visible until refresh succeeds.
 
 ### Housekeeping
 
@@ -168,20 +158,15 @@ Training Calendar are protected even when empty; databases are listed, never
 archived), duplicate same-day rows are reported for `migrate-consolidate.mjs`,
 and the three workspace pages get their canonical icons.
 
-The dashboard column ids are captured into `data/notion-ids.json` under
-`__dashboard.columns` (`nextSession`, `progressionGuide`, `thisWeek`,
-`nutrition`, `bodyStats`, `goals`, `activeProgram`, `quickCommands`,
-`messageCoach`). Keep the row order in this document in sync with `TILE_ROWS`
-in both `scripts/setup-workspace.mjs` and `scripts/notion.mjs`.
+The overview cache is `__dashboard: { pageId, layout: "overview",
+overviewBlockId, columns: {} }`. Its membership is verified against the pinned
+Hub before writing. Older column dashboards remain supported until an explicit
+rebuild; `refresh-tile` only accepts their verified columns.
 
-### Updating tiles
-
-Never edit blocks in place (ids shift). Replace the whole tile:
+### Refreshing the overview
 
 ```bash
-node scripts/notion.mjs refresh-tile --tile goals --md "> [🎯] **Goals**\n- Squat 100kg by Sept"
-node scripts/notion.mjs refresh-tile --tile thisWeek --file week.md
-node scripts/notion.mjs refresh-tile --tile bodyStats --md "..."
+node scripts/notion.mjs sync-dashboard
 ```
 
 ## Nutrition tile and daily targets
@@ -193,7 +178,7 @@ refreshed independently of navigation and source records; never clear the whole
 overview to refresh a nutrition display. The initial body is an explicit empty
 state, with no assumed target or fabricated intake.
 
-The Nutrition tile is data-derived like the Dashboard's other summary tiles: `sync-dashboard`
+The nutrition summary is data-derived: `sync-dashboard`
 re-derives it from today's Meal Log rows (sum of calories and protein) versus
 the user's daily targets. Targets come from the gitignored `PERSONAL.md` at the
 repo root, parsed for lines matching `Daily calorie target` (kcal) and
@@ -241,8 +226,5 @@ population; `notion.mjs exercise-library --action show` reads the canonical
 note and `--action replace --md "..."` updates it. The coach draws on these when
 planning and recommending.
 
-Refresh **Goals** after a goal changes, **bodyStats** after a check-in,
-**thisWeek** after a session is logged, and **nutrition** after a meal is
-logged (or let `sync-dashboard` handle all four in one call). Rebuild the whole
-Dashboard (`--rebuild-dashboard`) when the program changes, the week advances,
-or more than three tiles need updating at once.
+Request `sync-dashboard` after a goal, check-in, session, meal, or program
+changes. Ordinary record updates do not require a Dashboard rebuild.

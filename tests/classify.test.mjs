@@ -16,6 +16,7 @@ const {
   isSessionFinal,
   renderRapidLedger,
 } = await import("../dist/agent/runner.js");
+const { isMealLog } = await import("../dist/agent/classify.js");
 
 test("short transactional log lines route to the fast tier", () => {
   assert.equal(classifyQuery("did 5x5 squats at 80kg"), "fast");
@@ -27,6 +28,42 @@ test("meal logs stay fast even though they mention food nouns", () => {
   assert.equal(classifyQuery("just ate nasi lemak"), "fast");
   assert.equal(classifyQuery("dinner 800 cal"), "fast");
   assert.equal(classifyQuery("breakfast roti canai telur"), "fast");
+});
+
+test("first-person meal logs and named eating occasions stay fast without becoming workout logs", () => {
+  for (const message of [
+    "i ate overnight oats",
+    "I had breakfast",
+    "I just had a sandwich",
+    "I drank milk",
+    "my lunch: rice and chicken",
+    "lunch was a sandwich",
+    "finished dinner",
+    "completed lunch",
+    "logged meal",
+    "done with dinner",
+  ]) {
+    assert.equal(isMealLog(message), true, message);
+    assert.equal(classifyQuery(message), "fast", message);
+  }
+});
+
+test("meal questions and workout completion retain their existing routes", () => {
+  for (const message of [
+    "I ate oats, should I add protein?",
+    "I had lunch but my stomach is in pain",
+    "lunch ideas for cutting",
+    "finished dinner, what should I eat tomorrow?",
+    "I ate overnight oats is that enough",
+    "I had lunch can I work out now",
+  ]) {
+    assert.equal(isMealLog(message), false, message);
+    assert.equal(classifyQuery(message), "standard", message);
+  }
+  for (const message of ["done", "finished bench 60x12", "logged squats 80kg 5x5"]) {
+    assert.equal(isMealLog(message), false, message);
+    assert.equal(classifyQuery(message), "fast", message);
+  }
 });
 
 test("bare set notation routes fast for rapid-fire logging", () => {

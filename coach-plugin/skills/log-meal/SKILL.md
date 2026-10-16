@@ -9,6 +9,10 @@ Turn what the user ate, however they tell you (typed, voice note, or photo), int
 a clean row in the Notion Meal Log, then show where their day stands against
 their targets.
 
+Use profile and logging-style text already supplied in your system context;
+do not reread unchanged files when their contents are already present. Read
+missing context when needed.
+
 ## 0. Food Library first
 
 Repeat foods should be lookups, not fresh guesses. Before estimating anything:
@@ -85,65 +89,25 @@ per calendar date, titled `DD/MM/YY (Weekday)` (for example `28/08/26
 Breakfast, Lunch, Tea, Dinner, Supper. Every meal logged lands under its
 occasion's section. Multiple meals never mean multiple rows.
 
-The upsert flow, every time:
+Use the compound `log-meal` command in section 3 for every new meal. It finds
+or creates the one daily row, adds this meal's numbers using the existing
+additive update logic, puts the meal under its occasion heading, and reads
+back authoritative totals in the same command. Do not perform separate
+`find-row`, `log`/`update`, and `sum-day` calls for a normal meal. Supply only
+this meal's numbers, without `+=`, and never supply a running daily total.
 
-1. Check whether today's row exists (find-row filters the Date property, which
-   is still the ISO date, so the human title changes nothing):
-   `node scripts/notion.mjs find-row --db "Meal Log" --date <YYYY-MM-DD from header>`
-2. **No row yet:** `log` one titled `<DD/MM/YY (Weekday)>`, derived from the
-   header date, with this meal's values (`Meal Type` = its occasion), and pass
-   **`--body "## <Occasion>\n- <meal line>"`** so the section heading and line
-   are written in the same command:
+**Corrections and uncertain writes.** This command adds a meal; it does not
+replace a meal already saved. If a write or verification fails, read the
+existing daily row before deciding what happened. Never retry the same meal
+blindly, create a replacement daily row, or claim a correction succeeded
+without checking it. Already-saved body corrections require an edit in
+Notion; the restricted coach tools cannot archive the old row to replace it.
+Explain that limitation and what needs correcting rather than creating
+duplicate daily records.
 
-   ```bash
-   node scripts/notion.mjs log --db "Meal Log" \
-     --set "Meal=28/08/26 (Friday)" --set "Date=2026-08-28" \
-     --set "Meal Type=Breakfast" --set "Calories (kcal)=450" \
-     --set "Protein (g)=25" --set "Source=Photo" \
-     --body "## Breakfast\n- Three eggs on toast (~450 kcal / 25g protein)"
-   ```
-
-3. **Row exists:** `update --page <rowId>` with ADDITIVE numbers so the day
-   accumulates deterministically ("Calories (kcal)=+=650", "Protein (g)=+=28"),
-   and pass **`--body`** for the page line(s) in the same command. First time
-   that occasion appears today, `--body` holds its `## <Occasion>` heading
-   followed by the line (e.g. `--body "## Lunch\n- <line>"`); the same occasion
-   again, `--body` holds just the line. Keep sections in page order: Breakfast,
-   Lunch, Tea, Dinner, Supper. Never create a second row for the same date, and
-   never do the addition mentally - the `+=` operator reads the current value
-   itself.
-4. Reply totals: after writing, `sum-day` prints the day's authoritative totals;
-   relay those against targets.
-
-**Correcting a typo after the write.** There is no in-place body edit: a
-correction rewrites the whole day row. If the user corrects something already
-logged ("sorry, that was plain coffee, not a latte"):
-
-1. `find-row --db "Meal Log" --date <YYYY-MM-DD>` for the id, then
-   `read-blocks --page <rowId>` for the full current body.
-2. Reconstruct the COMPLETE corrected body: fix the typo'd line, keep every
-   other line byte-identical, keep the occasion sections in page order.
-   Recompute the day's Calories, Protein, Carbs, Fat from all lines (subtract
-   the wrong item, add the right one).
-3. `log` the corrected day row FIRST (same `DD/MM/YY (Weekday)` title, same
-   date, corrected properties, corrected `--body`).
-4. Read it back (`read-blocks` on the NEW id) and confirm the fix is in and
-   nothing else changed. Only then `archive` the OLD row id. Log-then-verify-
-   then-archive, in that order, so a failure can never lose data.
-5. Run `sum-day` then `sync-dashboard`, and reply starting with "Fixed:" plus
-   the corrected running total.
-
-Never archive before the replacement is verified. Never leave two live rows
-for the same date.
-
-Use `--body` on `log`/`update` to write meals in ONE command. Never try to
-capture the row id with shell redirection, grep, head, or `$()` to run a
-separate `append`: on this machine that fails and leaves the body empty.
-
-**Sections live on the page, numbers live in the properties.** The Breakfast /
-Lunch / Tea / Dinner / Supper headings are the human breakdown; the row's
-Calories (kcal) / Protein (g) / etc. properties are what `sum-day` and the
-Dashboard Nutrition tile read, so keep them in sync with every `+=` update.
+**Sections live on the page, numbers live in the properties.** The helper
+preserves existing text and accumulates the daily numeric properties. The
+Meal Log and Dashboard summaries read those same recorded numbers.
 
 **Date:** default to today from the Telegram message header when they say
 "just now", "tadi", "today", or send a photo mid-meal. Use the day they name
@@ -174,34 +138,39 @@ when an unfamiliar dish or missing portion would materially change the estimate.
 
 ## 3. Write to Notion
 
-Resolve the database once (`node scripts/notion.mjs resolve-db --name "Meal
-Log"`) and add a row:
+After any needed Food Library lookup, save this meal and get verified daily
+totals with ONE command:
 
 ```bash
-node scripts/notion.mjs log --db "Meal Log" \
-  --set "Meal=28/08/26 (Friday)" \
-  --set "Date=2026-08-28" --set "Meal Type=Breakfast" \
+node scripts/notion.mjs log-meal --date 2026-08-28 \
+  --set "Meal Type=Breakfast" \
   --set "Calories (kcal)=450" --set "Protein (g)=25" \
   --set "Source=Photo" \
   --set "Notes=User said three eggs and two slices of toast" \
   --body "## Breakfast\n- Three eggs on toast (~450 kcal / 25g protein)"
 ```
 
-The title is always the day string `DD/MM/YY (Weekday)`, never the dish.
-The helper coerces each `--set` to the right type; property names must match
+The helper owns the daily title and Date, so omit both from `--set`. Pass the
+date grounded in the Telegram header or the user's stated eating date.
+The helper validates each `--set`; property names must match
 the schema in `docs/notion-architecture.md` exactly, and a wrong name fails
-loudly with the real names printed, so correct yourself from that. Add
+loudly with the real names printed. Source must be a live Meal Log option
+(normally Text, Voice, Photo, or Label), not the Food Library's Manual source.
+Fix rejected input only when the error confirms nothing was written. Add
 Carbs/Fat properties the same way when you have them. If the Meal Log database
 does not exist yet, run the setup-notion skill first.
 
 ## 4. Show where the day stands
 
-Do both, every time, before replying:
+Use the successful command's `Meal saved:` result: its `totals` are read from
+Notion after the write. Compare those recorded totals with the user's stated
+targets. No extra `sum-day` call is needed. If verification failed, describe
+the saved/uncertain state honestly and inspect the existing row before retrying.
 
-1. Run `node scripts/notion.mjs sum-day --db "Meal Log"` to get deterministic
-   totals for today (pass `--date YYYY-MM-DD` for another day).
-2. Run `node scripts/notion.mjs sync-dashboard --now <YYYY-MM-DD from header>`
-   to refresh the Nutrition tile (and This Week, Goals, Body Stats while at it).
+Reply once the meal and its totals are verified. The running app queues the
+visual nutrition refresh after the reply. Do not call `sync-dashboard`,
+`sync-nutrition`, or a chart renderer for each meal, wait for page rebuilds,
+or claim those visuals have already refreshed.
 
 ## 5. Reply
 
@@ -209,7 +178,7 @@ Keep it short and useful:
 
 - Confirm what you logged with the estimate ("Three eggs on toast,
   about 450 kcal and 25g protein").
-- Give the running total against targets from the sum-day output: "That puts
+- Give the running total against targets from the verified command result: "That puts
   you at 1450 kcal and 76g protein today, about 550 kcal and 44g left."
 - One light observation max, tied to their goal, never a lecture. A gentle flag
   on the third sugary drink of the day is coaching; nagging is noise.

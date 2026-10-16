@@ -58,8 +58,11 @@ export async function uploadNutritionImage(api, summary) {
     .resize(1440, 600)
     .png()
     .toBuffer();
+  return uploadPngImage(api, png, "daily-nutrition.png");
+}
+
+export async function uploadPngImage(api, png, filename) {
   const options = { version: "2026-03-11" };
-  const filename = "daily-nutrition.png";
   const upload = await api(
     "/file_uploads",
     "POST",
@@ -71,12 +74,11 @@ export async function uploadNutritionImage(api, summary) {
     options,
   );
   if (!/^[a-f0-9-]{32,36}$/i.test(upload.id ?? ""))
-    throw new Error("Notion returned no nutrition upload ID.");
+    throw new Error("Notion returned no image upload ID.");
   const form = new FormData();
   form.append("file", new Blob([png], { type: "image/png" }), filename);
   const sent = await api(`/file_uploads/${upload.id}/send`, "POST", form, options);
-  if (sent.status !== "uploaded")
-    throw new Error("Notion nutrition image upload did not complete.");
+  if (sent.status !== "uploaded") throw new Error("Notion image upload did not complete.");
   return upload.id;
 }
 

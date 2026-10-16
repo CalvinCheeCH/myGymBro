@@ -11,31 +11,36 @@ export function createCoachToolServer(chatId: string) {
     "run_script",
     "Run one approved myGymBro helper script without a shell. Pass the script name and an array of arguments.",
     { script: z.enum(SCRIPT_NAMES), args: z.array(z.string()) },
-    async (args) => result(await executeCoachTool("run_script", args, chatId)),
+    async (args) =>
+      result(await executeCoachTool("run_script", args, chatId, { deferVisuals: true })),
   );
   const readFile = tool(
     "read_file",
     "Read an approved, non-secret project or knowledge file by relative path.",
     { path: z.string() },
-    async (args) => result(await executeCoachTool("read_file", args, chatId)),
+    async (args) =>
+      result(await executeCoachTool("read_file", args, chatId, { deferVisuals: true })),
   );
   const writeFile = tool(
     "write_file",
     "Write an approved profile, persona, logging-style, or knowledge file.",
     { path: z.string(), content: z.string() },
-    async (args) => result(await executeCoachTool("write_file", args, chatId)),
+    async (args) =>
+      result(await executeCoachTool("write_file", args, chatId, { deferVisuals: true })),
   );
   const listKnowledge = tool(
     "list_knowledge",
     "List loose files in the knowledge folder that have not been imported yet.",
     {},
-    async (args) => result(await executeCoachTool("list_knowledge", args, chatId)),
+    async (args) =>
+      result(await executeCoachTool("list_knowledge", args, chatId, { deferVisuals: true })),
   );
   const moveKnowledge = tool(
     "move_knowledge",
     "Move an imported loose knowledge file into knowledge/processed/.",
     { filename: z.string() },
-    async (args) => result(await executeCoachTool("move_knowledge", args, chatId)),
+    async (args) =>
+      result(await executeCoachTool("move_knowledge", args, chatId, { deferVisuals: true })),
   );
 
   return createSdkMcpServer({
