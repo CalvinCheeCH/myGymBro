@@ -66,27 +66,3 @@ not copy the bot, local server, credentials, or runtime data.
 No dependency installation or bot build is needed for this command.
 
 Relative asset paths support a project URL such as `/myGymBro/`.
-
-## GitHub Pages when you are ready
-
-[GitHub Free supports Pages from public repositories](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages).
-Local testing needs no paid plan or billing change.
-
-When enabling Pages for a public release:
-
-1. In the repository, open **Settings → Pages → Build and deployment** and select
-   **GitHub Actions** as the source. Set the `github-pages` environment to allow
-   deployments from `master` only.
-2. Open **Actions → CI → Run workflow**, select `master`, and run it. The
-   `deploy-showcase` job runs only after `build-and-test` and `publication-security`
-   pass, and only for public `master` push or manual runs. It stays skipped while
-   the repository is private and never deploys pull requests.
-3. Open the URL reported by the deployment, expected to be
-   `https://CalvinCheeCH.github.io/myGymBro/`. Check the demo and its GitHub link.
-   Add the verified live demo URL near the top of the main README when available.
-
-The workflow uploads only `dist/showcase/`; it does not start the Telegram bot.
-The local Node server's security headers do not carry over to Pages. The demo adds
-no analytics, but [GitHub Pages logs visitor IPs for security](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages#data-collection).
-To keep bot source private on GitHub Free, a separately approved public demo-only
-repository is another option; this workflow does not create one.
