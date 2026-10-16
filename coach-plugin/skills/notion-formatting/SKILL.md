@@ -60,8 +60,8 @@ the page layout must not create replacement source databases or break their ids.
 - Tables or sparklines for numbers; toggles for the detailed log behind each summary.
 
 **Dashboard / overview page**
-- The compact Dashboard has one managed visual overview: training, calorie and protein rings, bodyweight trend, weekly training bars, a 12-week heatmap, meals, and goals/program. `sync-dashboard` renders it locally from saved records and uploads it directly to Notion. Drawing it uses no AI tokens or external chart service.
-- Keep the generated image and its plain-text summary inside `Your daily overview`. Do not append separate tiles, charts, or Training Calendar tables to the Dashboard. Missing records and targets must stay explicit.
+- The compact Dashboard uses native Notion columns, callouts, equations, and rich text for training, calorie and protein rings, bodyweight change, weekly training bars, a 12-week heatmap, meals, and goals/program. Rings are twelve coloured equation segments with the precise percentage alongside them. No image, upload, AI renderer, or paid chart is needed.
+- Keep generated summary blocks inside `Your daily overview`. Do not append competing tiles/charts or a separate Training Calendar table. Missing records and targets must stay explicit. Summaries are regenerated from source records; put personal notes outside these managed summary containers.
 - Make it the central index: the compact navigation callout contains exactly **Dashboard, Workout Log, Meal Log, Weekly Plan, and Food & Knowledge**. Use their page ids from `data/notion-ids.json` under `__workspacePages`, not the similarly named source-database ids. Build links as rich text with a `link` (`{ type:"text", text:{ content:"Workout Log", link:{ url:"https://www.notion.so/<id-without-dashes>" } } }`). Programs, Goals, Body Stats, and the source databases belong in Food & Knowledge's Workspace Resources, while Training Calendar is reached inside Workout Log. Preserve this hierarchy when refreshing display blocks.
 
 **Meal Log overview page**
@@ -85,7 +85,7 @@ After a saved workout, meal, body check-in, goal, or program change, request one
 node scripts/notion.mjs sync-dashboard --now 2026-06-30   # --now is the date from the Telegram header
 ```
 
-The host queues display commands until after the Telegram reply and coalesces repeated requests. The queue acknowledgment confirms a display request, not a completed upload. Verify source writes and daily totals before confirming a save; do not wait for graphics or claim they have already refreshed. Use `sync-dashboard` for the compact overview; `refresh-tile` is only for legacy column dashboards. Never rebuild the page for an ordinary record update. If no Dashboard exists, use setup-notion when requested.
+The host queues display commands until after the Telegram reply and coalesces repeated requests. The queue acknowledgment confirms a display request, not a completed refresh. Verify source writes and daily totals before confirming a save; do not wait for graphics or claim they have already refreshed. Use `sync-dashboard` for the compact overview; `refresh-tile` is only for legacy column dashboards. Never rebuild the page for an ordinary record update. If no Dashboard exists, use setup-notion when requested.
 
 ## Always
 

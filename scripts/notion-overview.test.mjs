@@ -49,13 +49,14 @@ let databaseParents;
 let schemas;
 let rows;
 let calls;
-let uploads;
+let blockParents;
+let sequence;
 
 beforeEach(() => {
   process.chdir(fixture);
   process.env.NOTION_PARENT_PAGE_ID = HUB;
   calls = [];
-  uploads = [];
+  sequence = 0;
   parents = new Map([
     [FOOD, HUB],
     [RESOURCES, FOOD],
@@ -231,6 +232,9 @@ beforeEach(() => {
       ],
     ],
   ]);
+  blockParents = new Map();
+  for (const [parent, blocks] of children)
+    for (const block of blocks) blockParents.set(block.id, parent);
   fs.writeFileSync(
     cacheFile,
     JSON.stringify(
@@ -273,26 +277,12 @@ function api(t) {
   t.mock.method(globalThis, "fetch", async (url, options) => {
     const endpoint = new URL(url).pathname.replace("/v1", "");
     const method = options.method ?? "GET";
-    const body =
-      options.body instanceof FormData
-        ? options.body
-        : options.body
-          ? JSON.parse(options.body)
-          : undefined;
+    const body = options.body ? JSON.parse(options.body) : undefined;
     calls.push({ endpoint, method, body });
     assert.equal(new URL(url).origin, "https://api.notion.com");
     assert.equal(options.headers.Authorization, "Bearer test-notion-token");
     let result;
-    if (endpoint === "/file_uploads" && method === "POST") {
-      const id = `ffffffff-ffff-4fff-8fff-${String(uploads.length + 1).padStart(12, "0")}`;
-      uploads.push({ id, filename: body.filename });
-      result = { id };
-    } else if (/^\/file_uploads\/[^/]+\/send$/.test(endpoint)) {
-      assert.ok(body instanceof FormData);
-      const png = new Uint8Array(await body.get("file").arrayBuffer());
-      assert.deepEqual([...png.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
-      result = { status: "uploaded" };
-    } else if (endpoint.startsWith("/databases/")) {
+    if (endpoint.startsWith("/databases/")) {
       const id = endpoint.split("/")[2];
       assert.ok(schemas[id], `Unexpected source database ${id}`);
       result = endpoint.endsWith("/query")
@@ -307,11 +297,90 @@ function api(t) {
       method === "GET"
     ) {
       result = { results: children.get(endpoint.split("/")[2]) ?? [], has_more: false };
-    } else if (endpoint.startsWith("/blocks/") && method === "PATCH")
-      result = { id: endpoint.split("/")[2], results: [] };
-    else assert.fail(`Unexpected overview request ${method} ${endpoint}`);
+    } else if (endpoint.startsWith("/blocks/") && method === "PATCH") {
+      const id = endpoint.split("/")[2];
+      if (endpoint.endsWith("/children")) {
+        assert.ok(Array.isArray(body.children));
+        const results = body.children.map((payload) => materialize(id, payload));
+        children.set(id, [...(children.get(id) ?? []), ...results]);
+        const parent = findBlock(id);
+        if (parent) parent.has_children = true;
+        result = { results };
+      } else {
+        const existing = findBlock(id);
+        assert.ok(existing, `Cannot update missing block ${id}`);
+        assert.ok(!body[existing.type]?.children, "Update-block cannot replace children");
+        Object.assign(existing, structuredClone(body));
+        result = existing;
+      }
+    } else if (endpoint.startsWith("/blocks/") && method === "DELETE") {
+      const id = endpoint.split("/")[2];
+      const parent = blockParents.get(id);
+      assert.ok(parent, `Cannot delete missing block ${id}`);
+      children.set(
+        parent,
+        children.get(parent).filter((block) => block.id !== id),
+      );
+      const parentBlock = findBlock(parent);
+      if (parentBlock) parentBlock.has_children = children.get(parent).length > 0;
+      result = { id, archived: true };
+    } else assert.fail(`Unexpected overview request ${method} ${endpoint}`);
     return new Response(JSON.stringify(result), { status: 200 });
   });
+}
+
+function findBlock(id) {
+  for (const blocks of children.values()) {
+    const block = blocks.find((item) => item.id === id);
+    if (block) return block;
+  }
+}
+
+function materialize(parent, payload, depth = 0) {
+  assert.ok(depth <= 2, "Notion append accepts at most two nested levels");
+  const item = structuredClone(payload);
+  item.id = `native-${++sequence}`;
+  blockParents.set(item.id, parent);
+  const nested = item[item.type]?.children;
+  if (nested) {
+    Reflect.deleteProperty(item[item.type], "children");
+    const descendants = nested.map((child) => materialize(item.id, child, depth + 1));
+    item.has_children = descendants.length > 0;
+    children.set(item.id, descendants);
+  } else item.has_children = false;
+  return item;
+}
+
+function displayTree(id) {
+  return (children.get(id) ?? []).flatMap((block) => [block, ...displayTree(block.id)]);
+}
+
+function displayText(id) {
+  return displayTree(id)
+    .map((block) =>
+      (block[block.type]?.rich_text ?? []).map((part) => part.text?.content ?? "").join(""),
+    )
+    .join("\n");
+}
+
+function writes() {
+  return calls.filter((call) => call.method !== "GET" && !call.endpoint.endsWith("/query"));
+}
+
+function assertDisplayWritesOnly() {
+  for (const write of writes()) {
+    assert.ok(
+      write.endpoint.startsWith("/blocks/"),
+      `Unexpected non-block write ${write.endpoint}`,
+    );
+    let id = write.endpoint.split("/")[2];
+    const visited = new Set();
+    while (!["verified-overview", "verified-nutrition"].includes(id)) {
+      assert.ok(id && !visited.has(id), `Write outside verified display: ${write.endpoint}`);
+      visited.add(id);
+      id = blockParents.get(id);
+    }
+  }
 }
 
 test("overview model reads actual scoped values without assumed targets or cache writes", async (t) => {
@@ -378,46 +447,32 @@ test("a moved source database is not queried outside verified Workspace Resource
   );
 });
 
-test("sync uploads matching 370 kcal / 13 g summaries and updates only verified display children", async (t) => {
+test("sync replaces old images with matching native summaries inside verified display containers", async (t) => {
   api(t);
   const before = fs.readFileSync(cacheFile, "utf8");
+  const sourceBefore = structuredClone(rows);
+  const dailyBefore = structuredClone(children.get(DAILY));
+  const dashboardBefore = structuredClone(children.get(DASHBOARD));
+  const mealBefore = structuredClone(children.get(MEALS));
   await cmdSyncDashboard({ now: DATE });
-  assert.deepEqual(
-    uploads.map((upload) => upload.filename),
-    ["fitness-overview.png", "daily-nutrition.png"],
-  );
-  const patches = calls.filter((call) => call.method === "PATCH");
-  assert.deepEqual(
-    patches.map((call) => call.endpoint).sort(),
-    [
-      "/blocks/dashboard-caption",
-      "/blocks/dashboard-image",
-      "/blocks/meal-caption",
-      "/blocks/meal-image",
-    ].sort(),
-  );
-  const overviewCaption = patches.find((call) => call.endpoint === "/blocks/dashboard-image").body
-    .image.caption[0].text.content;
-  const mealCaption = patches.find((call) => call.endpoint === "/blocks/meal-image").body.image
-    .caption[0].text.content;
-  assert.match(overviewCaption, /370 kcal and 13 g protein recorded today/);
-  assert.match(mealCaption, /Calories: 370 \(target not set\) kcal/);
-  assert.match(mealCaption, /Protein: 13 \(target not set\) g/);
-  for (const patch of patches.filter((call) => call.body.image))
-    assert.equal(
-      patch.body.image.type,
-      undefined,
-      "Notion update-block payload must omit the append-only image type",
-    );
+  const overview = displayTree("verified-overview");
+  const nutrition = displayTree("verified-nutrition");
+  assert.ok([...overview, ...nutrition].every((block) => !["image", "embed"].includes(block.type)));
+  assert.equal(overview.filter((block) => block.type === "equation").length, 3);
+  assert.equal(nutrition.filter((block) => block.type === "equation").length, 2);
+  assert.match(displayText("verified-overview"), /370 kcal/);
+  assert.match(displayText("verified-overview"), /13 g/);
+  assert.match(displayText("verified-nutrition"), /370 kcal/);
+  assert.match(displayText("verified-nutrition"), /13 g/);
   assert.equal(
-    calls.some(
-      (call) =>
-        call.method === "DELETE" ||
-        call.endpoint === "/pages" ||
-        (call.method === "PATCH" && call.endpoint.startsWith("/databases/")),
-    ),
+    calls.some((call) => call.endpoint.startsWith("/file_uploads")),
     false,
   );
+  assertDisplayWritesOnly();
+  assert.deepEqual(rows, sourceBefore);
+  assert.deepEqual(children.get(DAILY), dailyBefore);
+  assert.deepEqual(children.get(DASHBOARD), dashboardBefore);
+  assert.deepEqual(children.get(MEALS), mealBefore);
   assert.equal(
     calls.some((call) => call.endpoint.includes("unverified-cached")),
     false,
@@ -425,24 +480,64 @@ test("sync uploads matching 370 kcal / 13 g summaries and updates only verified 
   assert.equal(fs.readFileSync(cacheFile, "utf8"), before);
 });
 
-test("partial sync reports unavailable nutrition without overwriting the meal display with zeros", async (t) => {
+test("an identical native refresh makes no display writes", async (t) => {
+  api(t);
+  await cmdSyncDashboard({ now: DATE });
+  const overviewBefore = structuredClone(displayTree("verified-overview"));
+  const nutritionBefore = structuredClone(displayTree("verified-nutrition"));
+  calls.length = 0;
+  await cmdSyncDashboard({ now: DATE });
+  assert.deepEqual(writes(), []);
+  assert.deepEqual(displayTree("verified-overview"), overviewBefore);
+  assert.deepEqual(displayTree("verified-nutrition"), nutritionBefore);
+});
+
+test("updated totals patch their existing native blocks without rebuilding the display", async (t) => {
+  api(t);
+  await cmdSyncDashboard({ now: DATE });
+  const overviewIds = displayTree("verified-overview").map((block) => block.id);
+  const nutritionIds = displayTree("verified-nutrition").map((block) => block.id);
+  rows[SOURCES["Meal Log"]][0].properties["Calories (kcal)"] = number(420);
+  calls.length = 0;
+  await cmdSyncDashboard({ now: DATE });
+  assert.equal(writes().length, 3);
+  assert.ok(writes().every((call) => JSON.stringify(call.body).includes("420")));
+  assert.ok(
+    writes().every((call) => call.method === "PATCH" && !call.endpoint.endsWith("/children")),
+  );
+  assertDisplayWritesOnly();
+  assert.deepEqual(
+    displayTree("verified-overview").map((block) => block.id),
+    overviewIds,
+  );
+  assert.deepEqual(
+    displayTree("verified-nutrition").map((block) => block.id),
+    nutritionIds,
+  );
+  assert.match(displayText("verified-overview"), /420 kcal/);
+  assert.match(displayText("verified-nutrition"), /420 kcal/);
+});
+
+test("partial sync shows unavailable nutrition on both displays and reports the failure", async (t) => {
   api(t);
   databaseParents.set(SOURCES["Meal Log"], OUTSIDE);
+  const sourceBefore = structuredClone(rows);
+  const dailyBefore = structuredClone(children.get(DAILY));
   await assert.rejects(cmdSyncDashboard({ now: DATE }), /unavailable sources: Meal Log/);
-  assert.deepEqual(
-    uploads.map((upload) => upload.filename),
-    ["fitness-overview.png"],
-  );
-  const image = calls.find(
-    (call) => call.endpoint === "/blocks/dashboard-image" && call.method === "PATCH",
-  );
-  assert.match(image.body.image.caption[0].text.content, /Nutrition unavailable/);
-  assert.equal(
-    calls.some(
-      (call) =>
-        call.method === "PATCH" &&
-        ["/blocks/meal-caption", "/blocks/meal-image"].includes(call.endpoint),
+  assert.match(displayText("verified-overview"), /Nutrition records could not be read/);
+  assert.match(displayText("verified-nutrition"), /Nutrition records could not be read/);
+  assert.doesNotMatch(displayText("verified-overview"), /0 kcal|0 g|370 kcal/);
+  assert.doesNotMatch(displayText("verified-nutrition"), /0 kcal|0 g|370 kcal/);
+  assert.ok(
+    [...displayTree("verified-overview"), ...displayTree("verified-nutrition")].every(
+      (block) => !["image", "embed"].includes(block.type),
     ),
+  );
+  assert.equal(
+    calls.some((call) => call.endpoint.startsWith("/file_uploads")),
     false,
   );
+  assertDisplayWritesOnly();
+  assert.deepEqual(rows, sourceBefore);
+  assert.deepEqual(children.get(DAILY), dailyBefore);
 });

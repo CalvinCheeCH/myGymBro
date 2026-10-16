@@ -1536,70 +1536,15 @@ async function dashboardModel(date) {
   return { model, failures };
 }
 
-/** Update only this generated display; never traverse or rewrite the source logs. */
-async function updateOverviewImage(containerId, image, text, record) {
-  const children = await listChildren(containerId);
-  const current = children.find((b) => b.type === "image");
-  if (current) {
-    const { type: _type, ...update } = image;
-    await notion(`/blocks/${current.id}`, "PATCH", { image: update }, { version: "2026-03-11" });
-  } else
-    await notion(
-      `/blocks/${containerId}/children`,
-      "PATCH",
-      { children: [{ type: "image", image }] },
-      { version: "2026-03-11" },
-    );
-  const paragraph = children.find((b) => b.type === "paragraph");
-  if (paragraph)
-    await notion(`/blocks/${paragraph.id}`, "PATCH", { paragraph: { rich_text: rt(text) } });
-  else
-    await notion(`/blocks/${containerId}/children`, "PATCH", {
-      children: [{ type: "paragraph", paragraph: { rich_text: rt(text) } }],
-    });
-  if (record) {
-    const link = children.find(
-      (b) =>
-        b.type === "paragraph" &&
-        /^(Open \d{4}-\d{2}-\d{2}'s meal record|Daily summary · \d{4}-\d{2}-\d{2})$/.test(
-          weeklyPlanText(b),
-        ),
-    );
-    const rich_text = [
-      {
-        type: "text",
-        text: {
-          content: record.pageId
-            ? `Open ${record.date}'s meal record`
-            : `Daily summary · ${record.date}`,
-          ...(record.pageId
-            ? { link: { url: `https://www.notion.so/${normId(record.pageId)}` } }
-            : {}),
-        },
-      },
-    ];
-    if (link) await notion(`/blocks/${link.id}`, "PATCH", { paragraph: { rich_text } });
-  }
-}
-
 async function refreshOverview(args, dashboard) {
   const started = Date.now();
   const { model, failures } = await dashboardModel(dashboardDate(args));
-  const { renderDashboardPng, dashboardCaption } = await import("./notion-dashboard.mjs");
-  const { uploadPngImage, uploadNutritionImage, nutritionCaption } = await import(
-    "./notion-nutrition.mjs"
+  const { renderDashboardBlocks, renderNutritionBlocks } = await import(
+    "./notion-dashboard-blocks.mjs"
   );
-  const renderStarted = Date.now();
-  const png = await renderDashboardPng(model);
-  const renderMs = Date.now() - renderStarted;
-  const caption = dashboardCaption(model);
-  const uploadId = await uploadPngImage(notion, png, "fitness-overview.png");
-  await updateOverviewImage(
-    dashboard.overviewBlockId,
-    { type: "file_upload", file_upload: { id: uploadId }, caption: rt(caption) },
-    caption,
-  );
-  if (model.nutrition) {
+  const { syncNativeBlocks } = await import("./notion-native-blocks.mjs");
+  await syncNativeBlocks(notion, dashboard.overviewBlockId, renderDashboardBlocks(model));
+  {
     const cache = readCache();
     const mealPage = cache.__workspacePages?.meals ?? cache.__mealLogPage;
     if (!mealPage || !(await pageIsWithinHub(mealPage, hubId())))
@@ -1609,25 +1554,17 @@ async function refreshOverview(args, dashboard) {
     );
     if (!summary)
       throw new Error("Meal Log is missing its Daily nutrition summary. Run /setup first.");
-    const nutritionUpload = await uploadNutritionImage(notion, model.nutrition);
-    await updateOverviewImage(
+    await syncNativeBlocks(
+      notion,
       summary.id,
-      {
-        type: "file_upload",
-        file_upload: { id: nutritionUpload },
-        caption: rt(nutritionCaption(model.nutrition)),
-      },
-      model.nutrition.incomplete
-        ? "Some saved nutrition values are missing. The Dashboard and this page use the same available daily totals."
-        : "The Dashboard and this page use the same daily totals. Recorded intake is an estimate; missing logs do not mean you ate nothing.",
-      { date: model.date, pageId: model.dailyPageId },
+      renderNutritionBlocks(model, { dailyPageId: model.dailyPageId }),
     );
   }
   console.log(
     JSON.stringify({
       refreshed: "Dashboard and Meal Log",
       date: model.date,
-      renderMs,
+      format: "native blocks",
       durationMs: Date.now() - started,
       unavailable: failures,
     }),
@@ -1636,7 +1573,7 @@ async function refreshOverview(args, dashboard) {
     throw new Error(`Dashboard refreshed with unavailable sources: ${failures.join(", ")}.`);
 }
 
-/** Both summaries are calculated once from the same day; graphs are uploaded only to Notion. */
+/** Both native summaries use the same recorded day and targets. */
 async function cmdSyncNutrition(args, providedColumns) {
   let columns = providedColumns;
   if (!columns) {
@@ -1667,9 +1604,9 @@ async function cmdSyncNutrition(args, providedColumns) {
     protein: number(pg.properties?.[proteinProp]),
   }));
   const targets = readPersonalTargets();
-  const { summarizeNutrition, uploadNutritionImage, nutritionBlocks } = await import(
-    "./notion-nutrition.mjs"
-  );
+  const { summarizeNutrition } = await import("./notion-nutrition.mjs");
+  const { renderNutritionBlocks } = await import("./notion-dashboard-blocks.mjs");
+  const { syncNativeBlocks } = await import("./notion-native-blocks.mjs");
   const summary = summarizeNutrition(date, meals, targets);
   const cols = columns ?? (await resolveDashboard()).columns ?? {};
   const cache = readCache();
@@ -1683,40 +1620,15 @@ async function cmdSyncNutrition(args, providedColumns) {
           "Daily nutrition",
     );
   }
-  let uploadId;
-  try {
-    uploadId = await uploadNutritionImage(notion, summary);
-  } catch (error) {
-    console.error(`Nutrition image unavailable; showing recorded totals as text: ${error.message}`);
-  }
-  const brief = uploadId
-    ? nutritionBlocks(summary, uploadId)
-    : markdownToBlocks(`**${date}**\n${renderNutritionTile(meals, targets)}`);
+  const blocks = renderNutritionBlocks(
+    { date, nutrition: summary },
+    { dailyPageId: rows.length === 1 ? rows[0].id : undefined },
+  );
   if (cols.nutrition) {
-    await replaceManagedBlocks(cols.nutrition, [
-      {
-        type: "callout",
-        callout: {
-          rich_text: [
-            { type: "text", text: { content: "Daily nutrition" }, annotations: { bold: true } },
-          ],
-          icon: { type: "emoji", emoji: "🍽️" },
-          color: TILE_COLORS.nutrition,
-        },
-      },
-      ...brief,
-    ]);
+    await syncNativeBlocks(notion, cols.nutrition, blocks);
   }
   if (summaryBlock) {
-    await replaceManagedBlocks(
-      summaryBlock.id,
-      uploadId
-        ? nutritionBlocks(summary, uploadId, {
-            detailed: true,
-            dailyPageId: rows.length === 1 ? rows[0].id : undefined,
-          })
-        : brief,
-    );
+    await syncNativeBlocks(notion, summaryBlock.id, blocks);
   }
   console.log(
     `Synced daily nutrition for ${date}${summaryBlock ? " on Dashboard and Meal Log" : " on Dashboard; run compact workspace setup to add the Meal Log summary"}.`,

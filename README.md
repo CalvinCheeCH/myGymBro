@@ -123,6 +123,8 @@ progress through a conversation in Telegram.
   Five main pages keep navigation simple: Dashboard, Workout Log, Meal Log,
   Weekly Plan, and Food & Knowledge. Daily nutrition rings appear above the meal
   history and on Dashboard; new weekly plans appear first on one scrollable page.
+  Native Notion cards, segmented progress rings, training bars, and an activity
+  grid keep your overview editable, with no dashboard images to replace.
 - **Give your routine a regular nudge.** With scheduling configured, receive daily
   check-ins and weekly reviews. Connect Google Calendar to plan around your commitments
   and put training sessions on your calendar with phone reminders.

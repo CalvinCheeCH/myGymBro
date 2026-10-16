@@ -132,14 +132,16 @@ so repeat foods converge on label truth instead of fresh guesses.
 ## Dashboard
 
 A page with five-page navigation and one managed `Your daily overview` callout.
-It contains a locally rendered PNG and a plain-text summary: training, calorie
-and protein rings, latest bodyweight and trend, weekly duration bars, a 12-week
+It contains editable native blocks: training, calorie and protein rings,
+latest bodyweight and change, weekly duration bars, a 12-week
 training heatmap, meals, goals, and the active program. Empty or unreadable data
 is labelled explicitly; no sample intake, training target, or bodyweight is seeded.
 
-`sync-dashboard` reads the original sources and renders the overview using Sharp.
-It uploads directly to Notion, using no AI tokens or external chart service for
-the graphics. The Meal Log summary uses the same day's calculated nutrition.
+`sync-dashboard` reads the original sources and builds native columns, callouts,
+equations, and rich text. Rings use twelve coloured equation segments with the
+percentage also written as text; weekly bars and the activity grid use styled
+text. No images, AI rendering tokens, external renderer, or chart allowance is
+needed. The Meal Log summary uses the same day's calculated nutrition.
 `publish-heatmap.mjs` still maintains the full Training Calendar but skips its
 old Dashboard mirror when this overview exists.
 
@@ -148,7 +150,14 @@ Source writes and verified daily totals complete before save confirmation.
 One background writer coalesces refresh requests and rereads current data;
 reset pauses and drains that writer before archiving records. A failed optional
 refresh is logged and retried on a later request or startup; it does not undo a
-saved meal. The previous dated image can remain visible until refresh succeeds.
+saved meal. The previous dated summary can remain visible until refresh succeeds.
+
+`scripts/notion-native-blocks.mjs` patches only changed values when the structure
+is stable. Structural changes are appended in stages to respect Notion's nesting
+limit, with the previous display removed only after the new blocks are complete.
+Nested pages, databases, and unsupported block types stop the operation before
+writes. These are generated summary regions: edit source records for lasting
+changes, and keep personal notes outside them.
 
 ### Housekeeping
 
