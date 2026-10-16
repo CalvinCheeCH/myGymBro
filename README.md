@@ -27,10 +27,24 @@ while your computer is off.
 
 ## Less tracking friction, more useful history
 
-| Log between sets | Understand your meals |
-|---|---|
-| Send `bench 60x12`, say `done`, and keep your session together. | Send a photo, clarify portions, and see estimated calories and protein against your targets. |
-| ![Scripted workout chat: bench press sets become a sample Notion workout record](./docs/assets/showcase/workout.jpg) | ![Scripted meal chat: portion details, estimated calories and protein, and daily targets](./docs/assets/showcase/nutrition.jpg) |
+<table width="100%">
+  <thead>
+    <tr>
+      <th width="50%">Log between sets</th>
+      <th width="50%">Understand your meals</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td width="50%" valign="top">Send <code>bench 60x12</code>, say <code>done</code>, and keep your session together.</td>
+      <td width="50%" valign="top">Send a photo, clarify portions, and see estimated calories and protein against your targets.</td>
+    </tr>
+    <tr>
+      <td width="50%" align="center"><a href="./docs/assets/showcase/workout.jpg"><img src="./docs/assets/showcase/workout.jpg" alt="Scripted workout chat: bench press sets become a sample Notion workout record" width="400" /></a></td>
+      <td width="50%" align="center"><a href="./docs/assets/showcase/nutrition.jpg"><img src="./docs/assets/showcase/nutrition.jpg" alt="Scripted meal chat: portion details, estimated calories and protein, and daily targets" width="400" /></a></td>
+    </tr>
+  </tbody>
+</table>
 
 <details>
 <summary><strong>See your organized workspace and choose your coach's voice</strong></summary>
