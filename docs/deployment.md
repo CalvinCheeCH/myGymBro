@@ -7,7 +7,7 @@ variables; see [configuration.md](./configuration.md).
 **Choose a home for your coach first.** On your laptop, it works only while the computer
 is awake, online, and the bot is running. In your own cloud account, the provider runs it
 while your laptop is off. Either way, you provide your own Telegram and AI credentials.
-For the simplest first test, use the [beginner local setup](./getting-started.md#quickstart-local).
+For the simplest first test, use the [beginner local setup](../README.md#quickstart-local).
 
 ## Cloud hosting without a laptop
 
