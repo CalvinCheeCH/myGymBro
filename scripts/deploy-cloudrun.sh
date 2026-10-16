@@ -24,7 +24,10 @@ IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/${SERVICE}"
 echo "Building and pushing ${IMAGE}..."
 gcloud builds submit --tag "${IMAGE}"
 
-echo "Deploying ${SERVICE}..."
+# Bootstrap: a fresh service does not know its own URL yet, and webhook mode
+# refuses to start without PUBLIC_BASE_URL. Boot once in polling mode (always a
+# valid configuration), read back the assigned URL, then switch to webhook.
+echo "Bootstrapping ${SERVICE} in polling mode until the service URL is known..."
 gcloud run deploy "${SERVICE}" \
   --image "${IMAGE}" \
   --region "${REGION}" \
@@ -32,7 +35,7 @@ gcloud run deploy "${SERVICE}" \
   --no-cpu-throttling \
   --add-volume "name=data,type=cloud-storage,bucket=${BUCKET}" \
   --add-volume-mount "volume=data,mount-path=/data" \
-  --set-env-vars "MODE=webhook,HOME=/data,TIMEZONE=${TIMEZONE},AGENT_NAME=Coach,TRANSCRIBE_PROVIDER=off" \
+  --set-env-vars "MODE=polling,HOME=/data,TIMEZONE=${TIMEZONE},AGENT_NAME=Coach,TRANSCRIBE_PROVIDER=off" \
   --set-env-vars "SESSION_FILE=/data/sessions.json,SCHEDULE_FILE=/data/schedule.json" \
   --set-env-vars "ALLOWED_TELEGRAM_IDS=${ALLOWED_IDS},OWNER_CHAT_ID=${OWNER_CHAT_ID}" \
   --set-secrets "CLAUDE_CODE_OAUTH_TOKEN=claude-oauth:latest,TELEGRAM_BOT_TOKEN=telegram-token:latest,NOTION_TOKEN=notion-token:latest,CRON_SECRET=cron-secret:latest"
@@ -40,9 +43,9 @@ gcloud run deploy "${SERVICE}" \
 URL="$(gcloud run services describe "${SERVICE}" --region "${REGION}" --format 'value(status.url)')"
 echo "Service URL: ${URL}"
 
-echo "Setting PUBLIC_BASE_URL and redeploying so the Telegram webhook registers..."
+echo "Switching to webhook mode so the Telegram webhook registers..."
 gcloud run services update "${SERVICE}" --region "${REGION}" \
-  --set-env-vars "PUBLIC_BASE_URL=${URL}"
+  --set-env-vars "MODE=webhook,PUBLIC_BASE_URL=${URL}"
 
 # Cloud Scheduler needs the cron secret to call /cron/run. Read it back from Secret
 # Manager so it is not duplicated here.

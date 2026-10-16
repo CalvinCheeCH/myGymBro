@@ -1,6 +1,6 @@
 {
   "name": "mygymbro",
-  "version": "3.6.1",
+  "version": "3.6.2",
   "description": "myGymBro: a personal fitness and nutrition coach on Telegram, forked from Oak. Runs on Claude, Google Gemini, or OpenAI, backed by Notion.",
   "type": "module",
   "main": "dist/index.js",

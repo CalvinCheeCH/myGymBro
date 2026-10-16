@@ -42,25 +42,37 @@ COPY coach-plugin/ ./coach-plugin/
 RUN chmod 444 CLAUDE.md && chmod -R 555 coach-plugin/
 
 # Bundled CLIs the agent runs via Bash (Notion helper, workspace builder, exercise
-# lookup) and the docs some skills reference. Read-only at runtime; their caches
-# write to /data, not here.
+# lookup) and the docs some skills reference. Read-only at runtime; state files
+# default to /data, not here.
 COPY scripts/ ./scripts/
 COPY docs/ ./docs/
 RUN chmod -R 555 scripts/ docs/
 
+# knowledge/ keeps its seeded README plus agent-appended import drops; writable.
+COPY knowledge/ ./knowledge/
+
 COPY entrypoint.sh ./
 RUN chmod +x entrypoint.sh
 
-# PERSONAL.md is private, so it is deliberately excluded from the image
-# (.gitignore + .dockerignore). Link the project-root path to the durable volume
-# so a copy uploaded to /data/PERSONAL.md is picked up at runtime. The link dangles
-# harmlessly (agent treats PERSONAL.md as missing) when the volume has no copy.
-RUN ln -sf /data/PERSONAL.md /app/PERSONAL.md
+# Editable profile files live directly on the mounted volume so profile edits,
+# learned logging style, and /create personas survive container recreation. The
+# links dangle harmlessly (agent treats them as missing) while the volume has no
+# copy; the tool sandboxrecognises the fixed /data targets and nothing else.
+RUN ln -sf /data/PERSONAL.md /app/PERSONAL.md && \
+    ln -sf /data/LOGGING_STYLE.md /app/LOGGING_STYLE.md && \
+    ln -sf /data/PERSONAS.md /app/PERSONAS.md
 
-# /data is the mountpoint for the persistent volume (sessions + schedule).
-RUN chown -R node:node /app/dist /app/node_modules /app/package.json /app/entrypoint.sh && \
-    mkdir -p /home/node/.claude && chown -R node:node /home/node && \
-    mkdir -p /data && chown node:node /data
+# Claude SDK conversation transcripts are agent state too; keep them on the volume.
+ENV HOME=/data
+
+# /data is the mountpoint for the persistent volume (sessions, schedule, history,
+# persona, ledger, run-log, and token files default there via entrypoint.sh).
+# The project data/ and knowledge/ folders stay writable for regenerable caches
+# and reports instead of failing a brand-new container with EACCES.
+RUN chown -R node:node /app/dist /app/node_modules /app/package.json /app/entrypoint.sh /app/knowledge && \
+    mkdir -p /app/data /home/node/.claude /data/.claude && \
+    chown -R node:node /home/node /data && \
+    chown node:node /app/data
 
 USER node
 

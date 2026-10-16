@@ -23,9 +23,10 @@ GitHub receives your committed repository and commit metadata when you push. It 
 not automatically receive ignored local runtime files. Already-tracked files, past
 commits, screenshots, or manually uploaded artifacts can still expose private data.
 
-Daily nutrition graphs are rendered locally, then uploaded directly to Notion and
-displayed on Dashboard and Meal Log. Their calories/protein totals are not sent to
-QuickChart. Training report images still use QuickChart as described above.
+Daily nutrition summaries are written to Notion as native summary text and
+equation values; no nutrition image is rendered or uploaded for that. Training
+report cards are the one rendered image and still use QuickChart as described
+above.
 
 ## Default controls
 

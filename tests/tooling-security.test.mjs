@@ -359,3 +359,102 @@ test("knowledge imports validate their destination before moving a file", async 
   assert.equal(typeof moved.output, "string");
   assert.equal(fs.existsSync(path.join(workspace, "knowledge/processed/program.txt")), true);
 });
+
+test("windows stream suffixes cannot smuggle reads, writes, helper args, or report outputs", async () => {
+  const secretFixture = path.join(workspace, "docs/token.json");
+  fs.writeFileSync(secretFixture, "synthetic secret token contents");
+  for (const smuggled of [
+    "docs/token.json::$DATA",
+    "docs\\token.json::$DATA",
+    "docs/token.json:atoffset",
+    "docs/token.json::$DATA::$DATA",
+  ]) {
+    const read = await executeCoachTool("read_file", { path: smuggled }, "42");
+    assert.match(read.error, /Only non-secret files/);
+    const write = await executeCoachTool(
+      "write_file",
+      { path: "knowledge/program.txt::$DATA", content: "synthetic" },
+      "42",
+    );
+    assert.match(write.error, /Only approved profile and knowledge files/);
+    const helperArg = await executeCoachTool(
+      "run_script",
+      { script: "notion.mjs", args: ["create", "--body-file", smuggled] },
+      "42",
+    );
+    assert.equal(typeof helperArg.error, "string");
+    const reportOut = await executeCoachTool(
+      "run_script",
+      { script: "report-card.mjs", args: ["--out", `data/notion-ids${smuggled.split("/").pop()}`] },
+      "42",
+    );
+    assert.equal(typeof reportOut.error, "string");
+  }
+  assert.equal(fs.readFileSync(secretFixture, "utf8"), "synthetic secret token contents");
+  assert.equal(executions.length, 0);
+});
+
+test("report outputs must be png paths so runtime state cannot be overwritten", async () => {
+  for (const out of [
+    "data/notion-ids.json",
+    "data/sessions.json",
+    "data/rapid-ledger.json",
+    "data/report-card.png::$DATA",
+  ]) {
+    const result = await executeCoachTool(
+      "run_script",
+      { script: "report-card.mjs", args: ["--out", out] },
+      "42",
+    );
+    assert.equal(typeof result.error, "string");
+    assert.match(result.error, /png|under data|Only non-secret|available/i);
+  }
+  assert.equal(executions.length, 0);
+  const ok = await executeCoachTool(
+    "run_script",
+    { script: "report-card.mjs", args: ["--out", "data/lower-report.Png"] },
+    "42",
+  );
+  assert.equal(typeof ok.output, "string");
+  assert.equal(executions.length, 1);
+});
+
+test("volume-routed profile files write through their fixed container links only", async () => {
+  const routed = path.join(workspace, "LOGGING_STYLE.md");
+  const imposter = path.join(workspace, "PERSONAS.md");
+  const volumeRoot = path.resolve(path.parse(workspace).root, "data");
+  const lstat = fs.lstatSync;
+  const readlink = fs.readlinkSync;
+  const fakeLinks = new Map([
+    [routed, path.join(volumeRoot, "LOGGING_STYLE.md")],
+    [imposter, path.join(volumeRoot, "imposter.md")],
+  ]);
+  const statMock = mock.method(fs, "lstatSync", (target, options) =>
+    fakeLinks.has(target) ? { isSymbolicLink: () => true } : lstat(target, options),
+  );
+  const linkMock = mock.method(
+    fs,
+    "readlinkSync",
+    (target) => fakeLinks.get(target) ?? readlink(target),
+  );
+  try {
+    const write = await executeCoachTool(
+      "write_file",
+      { path: "LOGGING_STYLE.md", content: "synthetic style" },
+      "42",
+    );
+    assert.match(write.output, /Updated LOGGING_STYLE\.md/);
+    assert.equal(fs.readFileSync(routed, "utf8"), "synthetic style");
+    const mismatch = await executeCoachTool(
+      "write_file",
+      { path: "PERSONAS.md", content: "synthetic" },
+      "42",
+    );
+    assert.match(mismatch.error, /Path resolves outside/);
+    assert.equal(fs.existsSync(imposter), false);
+  } finally {
+    statMock.mock.restore();
+    linkMock.mock.restore();
+    fs.rmSync(routed, { force: true });
+  }
+});

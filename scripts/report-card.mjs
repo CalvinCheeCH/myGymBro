@@ -784,6 +784,9 @@ async function main() {
     throw new Error('Report card period must be "day", "week", or "month".');
   }
   const out = path.resolve(process.cwd(), arg("out", "data/report-card.png"));
+  if (!/\.png$/i.test(out)) {
+    throw new Error("Report cards must be rendered to a .png image path.");
+  }
 
   const cache = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
   const workoutDb = cache["Workout Log"];

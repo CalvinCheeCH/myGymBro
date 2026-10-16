@@ -131,7 +131,9 @@ See [customization.md](./customization.md) to configure or extend them.
 
 ## Reminders
 
-A scheduler can message you proactively (a morning nudge, the Sunday plan, plus any
-custom reminder you ask for in chat). Management is live in polling mode; in
-webhook mode an external scheduler runs the jobs. See
-[deployment.md](./deployment.md) and [configuration.md](./configuration.md).
+A scheduler can message you proactively (a morning nudge and the Sunday plan).
+Management is live in polling mode; in webhook mode an external scheduler runs
+the jobs. Additional or custom reminder jobs are defined in your scheduler
+configuration, which the coach cannot edit itself; it can only run whatever jobs
+you configure. See [deployment.md](./deployment.md) and
+[configuration.md](./configuration.md).

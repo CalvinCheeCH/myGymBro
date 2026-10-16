@@ -54,6 +54,12 @@ function resolveProjectPath(input: unknown, allowData = false): string | null {
   if (
     segments.some(
       (segment) =>
+        // Windows reads a file's normal contents through NTFS stream suffixes
+        // such as `::$DATA`, and no workspace path legitimately contains a
+        // colon inside a project-relative component. Rejecting colons here
+        // defeats those suffixes before any anchored filename match or
+        // realpath resolution.
+        segment.includes(":") ||
         (BLOCKED_SEGMENTS.has(segment.toLowerCase()) &&
           !(allowData && segment.toLowerCase() === "data")) ||
         SECRET_FILE.test(segment),
@@ -67,6 +73,17 @@ function resolveProjectPath(input: unknown, allowData = false): string | null {
 function isWithin(parent: string, child: string): boolean {
   const rel = path.relative(parent, child);
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+
+// Container deployments symlink the editable root profile files onto the
+// persistent volume (/data). The sandbox recognises that exact fixed target
+// only, so an intended user-data link is allowed while every other alias
+// still resolves strictly inside the project.
+const EXTERNAL_ROOT_FILES = new Set(["PERSONAL.md", "LOGGING_STYLE.md", "PERSONAS.md"]);
+function expectedExternalFile(rel: string): string | null {
+  return EXTERNAL_ROOT_FILES.has(rel)
+    ? path.resolve(path.parse(PROJECT_ROOT).root, "data", rel)
+    : null;
 }
 
 type FileAccess = "read" | "write" | "data" | "processed";
@@ -96,27 +113,20 @@ function isApprovedPath(candidate: string, access: FileAccess): boolean {
   );
 }
 
-function assertNoSymlinkEscape(
-  candidate: string,
-  access: FileAccess,
-  allowExternalPersonal = false,
-): void {
-  const expectedPersonalTarget = path.resolve(path.parse(PROJECT_ROOT).root, "data", "PERSONAL.md");
+function assertNoSymlinkEscape(candidate: string, access: FileAccess, rel = ""): void {
+  const expectedExternal = expectedExternalFile(rel);
   if (
     !fs.existsSync(candidate) &&
     fs.lstatSync(candidate, { throwIfNoEntry: false })?.isSymbolicLink()
   ) {
     const target = path.resolve(path.dirname(candidate), fs.readlinkSync(candidate));
-    if (!allowExternalPersonal || target !== expectedPersonalTarget) {
+    if (!expectedExternal || target !== expectedExternal) {
       throw new Error("Path resolves outside the approved project workspace.");
     }
   }
   if (fs.existsSync(candidate)) {
     const realCandidate = fs.realpathSync(candidate);
-    if (
-      !isApprovedPath(realCandidate, access) &&
-      !(allowExternalPersonal && realCandidate === expectedPersonalTarget)
-    ) {
+    if (!isApprovedPath(realCandidate, access) && realCandidate !== expectedExternal) {
       throw new Error("Path resolves outside the approved project workspace.");
     }
   }
@@ -146,7 +156,7 @@ function getReadablePath(input: unknown): string {
   if (!isApprovedPath(candidate, "read")) {
     throw new Error("That project path is not available to the coach.");
   }
-  assertNoSymlinkEscape(candidate, "read", rel === "PERSONAL.md");
+  assertNoSymlinkEscape(candidate, "read", rel);
   return candidate;
 }
 
@@ -159,7 +169,7 @@ function getWritablePath(input: unknown): string {
       "Only PERSONAL.md, LOGGING_STYLE.md, PERSONAS.md, and knowledge files can be changed.",
     );
   }
-  assertNoSymlinkEscape(candidate, "write", rel === "PERSONAL.md");
+  assertNoSymlinkEscape(candidate, "write", rel);
   return candidate;
 }
 
@@ -188,6 +198,11 @@ function validateScriptArgs(script: CoachScript, args: string[], chatId: string)
     );
     if (!outputPath || !isApprovedPath(outputPath, "data")) {
       throw new Error("Report cards can only be written under data/.");
+    }
+    // A generated report may not replace a runtime-state file. Requiring the
+    // image extension keeps session/ledger/Notion-cache JSON out of reach.
+    if (!/\.png$/i.test(outputPath)) {
+      throw new Error("Report cards must be written to a .png image path.");
     }
     assertNoSymlinkEscape(outputPath, "data");
     assertNoSymlinkEscape(path.join(PROJECT_ROOT, "data", "report-cards"), "data");

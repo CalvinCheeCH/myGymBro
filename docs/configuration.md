@@ -87,9 +87,11 @@ After setting the client id and secret, authorise once with
 | `CUSTOM_PERSONAS_FILE` | `./PERSONAS.md` | Custom voices made with `/create` (gitignored). |
 | `SESSION_TTL_HOURS` | `12` | How long a conversation stays warm before a fresh session starts. |
 
-The container redirects sessions and schedules to `/data`. Other paths must also
-point to persistent storage to survive container replacement; relative `./data/`
-defaults refer to the application's directory. See the
+In the container the entrypoint defaults these (plus `CUSTOM_PERSONAS_FILE`,
+`RAPID_LEDGER_FILE`, `RUN_LOG_FILE`, `GEMINI_HISTORY_FILE`,
+`OPENAI_HISTORY_FILE`, and `GOOGLE_TOKEN_FILE`) to `/data`, so every state file
+survives container replacement when the volume is mounted. Relative `./data/`
+defaults refer to the application's directory in local installs. See the
 [storage requirements](./deployment.md#always-on-polling-mode-the-default).
 
 ## Transport mode
