@@ -21,7 +21,7 @@ while your computer is off.
 
 > **Hurray for free users!** Gemini offers a [free API tier](https://ai.google.dev/gemini-api/docs/pricing)
 > for eligible models, so you can try myGymBro with sample data and no AI usage
-> charges within Google's quotas. See the [setup and privacy conditions](#quickstart-local).
+> charges within Google's quotas. **[Read the free-tier privacy warning first](#gemini-free-tier-privacy-warning).**
 
 [Get started](#quickstart-local) · [See all commands](#commands) · [Understand your data](./docs/privacy.md)
 
@@ -129,8 +129,110 @@ transcription is enabled, and Google Calendar is an optional integration. Schedu
 check-ins depend on your hosting and scheduler setup.
 
 Coaching starts in English and uses the goals, equipment, diet, and schedule you share.
-Malaysian food references and common Malaysian slang, including Manglish, are supported
-when relevant to the meals you log; the coach does not assume your location or diet.
+
+## Built on Oak. More ways to make your history useful.
+
+Oak provides the Telegram coaching foundation, including Notion, Calendar, voice,
+exercise lookup, and character personalities. myGymBro adds reusable food records,
+structured nutrition tracking, easier set-by-set logging, visual training reviews,
+and explicit training calculations. It also extends exercise references, coach
+customization, and AI-provider choices.
+
+The additions below are compared with [Oak's published source](https://github.com/FrancescoCoding/Oak/tree/b2d321549ce3ac2a49d0259a039a90352befc034).
+The examples are scripted and fictional. Try the four step-by-step stories in the
+[interactive feature walkthroughs](./showcase/README.md#feature-walkthroughs).
+
+## Food Library: stop estimating the same food twice
+
+**Your usual foods become reusable references, so the next meal starts with saved
+serving values instead of another guess.** A protein powder, packaged breakfast,
+or familiar homemade meal can keep its serving basis and source beside its numbers.
+
+![Food Library walkthrough: save a label, keep a sourced Notion reference, and reuse one and a half servings](./docs/assets/feature-stories/food-library.svg)
+
+**Save once.** Send a readable nutrition label and say “remember this.” In this
+example, Sample whey provides **120 kcal and 24 g protein per 30 g serving**. The
+coach can save the name, serving, calories, protein, source, and category in Notion.
+Saving a reference does not mean you have eaten it and does not itself add a meal.
+
+**Reuse it later.** Say “I had 1.5 servings of the same Sample whey.” The saved
+reference gives **180 kcal and 36 g protein** for that amount. The connected meal
+workflow can record it in today's Meal Log using the saved values. If the food or
+serving is unclear, the coach asks for clarification.
+
+**Keep the source visible.** Label, Manual, and Estimate entries remain distinguishable.
+A saved estimate is still an estimate. You can correct serving values for future
+lookups; previous meal records keep the values saved with them.
+
+Browse with <code>/foodlib</code>, which currently shows up to 50 foods alphabetically.
+It uses your selected AI provider to format the lookup. Several food labels can also
+be sent in one album with a caption identifying each item.
+
+**The payoff:** less repeated nutrition entry, a consistent reference for repeat foods,
+and serving-based logging you can check yourself. Connected Notion is required to
+save and reuse the records.
+
+## Between-set messages become a complete session
+
+**Keep lifting while the details build up.** Send short sets, correct a value when
+needed, then say <code>done</code> to finalize the session. The bot keeps
+your pending sets together before saving the completed session into your dated Notion record.
+
+![Workout walkthrough: accumulate bench sets, finish the session, then retrieve a dated record](./docs/assets/feature-stories/workout-history.svg)
+
+The example contains three bench sets at **60 kg × 12, 12, and 10**, giving
+**2,040 kg of bench volume**. Its 46-minute duration is explicitly reported in the
+message. Multiple sessions on the same date can stay in separate sections of one
+daily page, with later additions merged into that day's record.
+
+Next time, ask “What did I bench last time?” Your recorded sets give the coach a
+reference for the next conversation. This extends Oak's complete-session logging
+with a workflow designed for the pauses between sets.
+
+## Training reviews you can see
+
+**Turn logged work into a comparison you can read at a glance.** Use <code>/report</code>
+for the weekly training card or <code>/report monthly</code> for a completed-month comparison.
+
+![Training-report walkthrough: weekly recorded training, monthly comparisons, and a separate written progress review](./docs/assets/feature-stories/training-reports.svg)
+
+The weekly card brings together recorded training days, session duration when
+available, and muscle-group working sets against the same elapsed days last week.
+Monthly cards compare the latest completed month with the preceding month using
+average weekly set totals, so different month lengths do not dominate the comparison.
+
+Report commands calculate their training summaries without an AI call. Charts are
+rendered through QuickChart. Ask <code>/progress</code> separately for an AI-written
+review of your available records, including broader context when you have logged it.
+
+## Training math with a reason behind the number
+
+**Ask for the calculation behind a decision.** The coach can use rule-based load
+suggestions, an estimated one-rep max, or a plate breakdown based on recorded lifts.
+
+![Training-math walkthrough: a recorded top set, an explained progression rule, estimated one-rep max and plate arithmetic](./docs/assets/feature-stories/training-math.svg)
+
+For example, **60 kg × 6 reps** sits inside an illustrative 5–8 rep range, so that
+double-progression rule holds the load. Epley's formula estimates a **72 kg one-rep
+max** for the same set. If you choose a **62.5 kg** barbell total, a 20 kg bar needs
+**20 kg + 1.25 kg per side**.
+
+These are calculation examples. Your program, technique, reported recovery, and
+limitations still guide training decisions. Suggestions can explain an increase,
+hold, or deload; estimates do not promise future performance.
+
+## More additions to explore
+
+| What becomes possible | An example to try | What myGymBro adds or extends |
+|---|---|---|
+| **See a whole day's nutrition** | Log breakfast and dinner, then ask how much protein remains. | Daily Meal Log records and recorded totals against your stated targets. Meal photos remain estimates. |
+| **Keep your training vocabulary** | Ask the coach to keep using your familiar chest-supported row variation. | A persistent Notion Exercise Library of performed variations, alongside the inherited exercise lookup. |
+| **See consistency build** | Open Training Calendar after logging sessions. | A workout heatmap and dashboard context grounded in recorded dates, meals, and saved plans. |
+| **Make the delivery yours** | Use <code>/persona</code>, or <code>/create</code> to describe a dry-humour, supportive, or Brainrot voice. | In-chat selection and saved custom written voices. Oak's nine built-in characters remain part of the foundation. |
+| **Choose your AI account** | Select Gemini, OpenAI, or Claude during setup. | Gemini and OpenAI engine options alongside Oak's Claude path. Provider credentials, terms, and usage limits apply. |
+| **Keep photos and corrections in context** | Send two food labels in an album with a mapping caption, or reply to the meal you are correcting. | Grouped album context and quoted-message context for the agent. It can ask when the mapping is unclear. |
+| **Clear a training cycle deliberately** | Use <code>/resetdata</code> to inspect the preview before confirming. | A guarded reset of tracked fitness records and weekly plans while retaining food/exercise libraries and references. |
+| **Explore before connecting accounts** | Walk through the Food Library, workout, report, and training-math stories. | A scripted interactive product demonstration using fictional data; it does not run the bot. |
 
 ## Security and privacy
 
@@ -155,21 +257,6 @@ It also does not make cloud hosting immune to DDoS or guarantee that all sensiti
 data has been found. Messages and relevant records go to your selected AI provider;
 reports send chart data to QuickChart. Read the [security policy](./SECURITY.md) and
 [privacy/data-flow guide](./docs/privacy.md) before connecting personal data.
-
-## Food Library: stop estimating the same food twice
-
-Your usual breakfast, protein shake, or repeat lunch becomes a saved lookup:
-
-1. **Snap a food label** (or say "remember this" after any estimate). The label's exact
-   per-serving calories, protein, carbs, and fat are filed to your Food Library, tagged
-   with a serving size, a source (Label, Manual, or Estimate), and a food category.
-   Unsure which category fits? The coach asks you instead of guessing.
-2. **Next time it appears**, the coach looks it up first and logs library numbers verbatim,
-   scaled to your servings. Label values take priority over new guesses; saved estimates
-   remain estimates, and you can supply corrected serving values.
-3. **Browse it anytime** with `/foodlib`: a Name | Category | Protein | Calories table of
-   everything filed, A to Z. Multi-photo label dumps work too: send several labels in one
-   album with a mapping caption and each gets filed.
 
 ## How it works
 
@@ -197,6 +284,17 @@ You do not need Git, Docker, Google Calendar, or a separate database for that fi
 bot cannot save your training and nutrition logs until Notion is configured. Add voice
 notes and Google Calendar later, after text and photo coaching work.
 
+### Gemini free-tier privacy warning
+
+> [!WARNING]
+> **Use fictional or non-personal data for free-tier trials.** Google's unpaid-service
+> terms allow inputs and replies to be used for product improvement, including human
+> review, and say not to submit personal, sensitive, or confidential information.
+> Before using your own fitness records, choose a provider or project with appropriate
+> data terms. Gemini projects associated with active billing use the paid-services data
+> terms and can incur charges. Different data-use terms apply in the EEA, Switzerland,
+> and the UK. [Read Google's data terms](https://ai.google.dev/gemini-api/terms).
+
 ## Quickstart (local)
 
 Follow these steps once. You do not need to clone, pull, push, or upload anything to GitHub.
@@ -218,11 +316,7 @@ Follow these steps once. You do not need to clone, pull, push, or upload anythin
    needed for that option. Check current [pricing](https://ai.google.dev/gemini-api/docs/pricing)
    and your project's [rate limits](https://ai.google.dev/gemini-api/docs/rate-limits).
 
-   **Use fictional or non-personal data for free-tier trials.** Google's unpaid-service
-   terms allow inputs and replies to be used for product improvement and prohibit
-   submitting personal, sensitive, or confidential information. For your own personal
-   fitness records, use a project with billing enabled; regional exceptions apply.
-   [Read Google's data terms](https://ai.google.dev/gemini-api/terms).
+   **Before connecting personal records, read the [Gemini free-tier privacy warning](#gemini-free-tier-privacy-warning).**
 
    **OpenAI — API key.** Create an API key in the
    [OpenAI API platform](https://platform.openai.com/api-keys). ChatGPT subscriptions
@@ -505,9 +599,10 @@ Notion, provider records, or backups. See [privacy controls](./docs/privacy.md).
 
 ## Data and acknowledgements
 
-- **Upstream ideas:** [Oak](https://github.com/FrancescoCoding/Oak) by FrancescoCoding (MIT),
-  whose Telegram-coach architecture this project started from and has since diverged from
-  substantially (three AI engines, daily workout logs, food library, report cards, scheduler).
+- **Built on Oak:** [Oak](https://github.com/FrancescoCoding/Oak) by FrancescoCoding /
+  Francesco Gruosso (MIT) supplies the original Telegram-coach foundation. myGymBro
+  builds on it with structured food tracking, daily workout workflows, visual training
+  reports, calculation tools, and additional AI-provider choices.
 - **Exercise data and demo images:** [free-exercise-db](https://github.com/yuhonas/free-exercise-db)
   by yuhonas, released under [The Unlicense](https://unlicense.org/) (public domain).
 - **Voice transcription:** [OpenAI Whisper](https://github.com/openai/whisper) (MIT),
@@ -517,4 +612,6 @@ Notion, provider records, or backups. See [privacy controls](./docs/privacy.md).
 
 ## License
 
-MIT. See [LICENSE](./LICENSE).
+Released under the [MIT License](./LICENSE). Oak's original code retains Francesco
+Gruosso's copyright notice; original myGymBro contributions carry Calvin Chee's
+copyright notice. Both notices remain with distributed copies.

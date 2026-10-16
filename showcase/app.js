@@ -1,3 +1,4 @@
+import { initFeatureStories } from "./feature-stories.js";
 import { initChatDemo } from "./chat-demo.js";
 import { initPersonaDemo } from "./persona-demo.js";
 import { initWorkspaceDemo } from "./workspace-demo.js";
@@ -91,7 +92,7 @@ const features = {
     items: [
       [
         "Weekly report cards",
-        "See recorded nutrition against targets and training balance compared with the previous week.",
+        "See recorded training days, duration, and muscle-group working sets compared with the same elapsed days last week.",
       ],
       [
         "The actual session details",
@@ -262,3 +263,4 @@ initWorkspaceDemo();
 initChatDemo();
 initFeatures();
 initPersonaDemo();
+initFeatureStories();

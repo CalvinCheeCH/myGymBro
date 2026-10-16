@@ -36,13 +36,31 @@ its name and tone, then browse the dashboard, logs, weekly plan, and libraries.
 Messages and custom names stay in the current page. Reloading resets the demo.
 README screenshots in `docs/assets/showcase/` are captures of this page using fictional records.
 
+## Feature walkthroughs
+
+Run the local demo and choose **Feature stories** in the navigation, or open
+[the walkthrough section](http://localhost:4173/#feature-stories) with the default
+server running.
+
+Four stories each have three steps: Food Library (save a label, keep a reference,
+reuse a confirmed serving), daily workout notes, weekly/monthly training reports,
+and training math with personal exercise references. Select a story, then use its
+step buttons or previous/next controls. The story tabs support arrow keys, Home,
+and End. Nothing connects to real accounts, and all records are fictional.
+
+The Food Library story separates saving a food from logging consumption. Its
+Sample Whey example uses 120 kcal and 24 g protein per 30 g serving; 1.5 confirmed
+servings gives 180 kcal and 36 g protein. It does not change the other sample day's
+totals. The report examples show training data; written coaching uses the selected
+AI provider in the running product.
+
 ## Static website package
 
 ```powershell
 npm run build:showcase
 ```
 
-This creates `dist/showcase/` from an explicit list of 18 files: the HTML, CSS,
+This creates `dist/showcase/` from an explicit list of 20 files: the HTML, CSS,
 browser modules, favicon, eight avatars, and license. It does
 not copy the bot, local server, credentials, or runtime data.
 No dependency installation or bot build is needed for this command.

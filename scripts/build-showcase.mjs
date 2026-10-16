@@ -8,6 +8,8 @@ const showcaseFiles = [
   "index.html",
   "styles.css",
   "persona.css",
+  "feature-stories.css",
+  "feature-stories.js",
   "app.js",
   "demo-data.js",
   "chat-demo.js",
@@ -53,5 +55,5 @@ export function buildShowcase() {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   buildShowcase();
-  console.log("Built static showcase in dist/showcase (18 public files).");
+  console.log("Built static showcase in dist/showcase (20 public files).");
 }

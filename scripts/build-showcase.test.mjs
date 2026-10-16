@@ -14,7 +14,7 @@ test("static showcase includes its local links, without private or stale files",
   const files = fs
     .readdirSync(output, { recursive: true })
     .filter((file) => fs.statSync(path.join(output, file)).isFile());
-  assert.equal(files.length, 18);
+  assert.equal(files.length, 20);
   assert.equal(files.filter((file) => file.endsWith(".png")).length, 8);
   for (const excluded of [
     "stale-private-file.txt",
