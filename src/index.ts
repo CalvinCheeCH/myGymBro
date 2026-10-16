@@ -626,20 +626,29 @@ bot.on("message", async (ctx) => {
         freshChat(chatId);
         try {
           await replyTo(
-            "Reset started. I’m archiving the previewed Notion rows and plan pages, then removing the previewed one-off workout events.",
+            "Reset started. I’m archiving the previewed Notion rows, saved weekly plan entries, and older plan pages, then removing the previewed one-off workout events.",
           );
           const result = await archiveResetData(pending.snapshot);
           const total = Object.values(result.databases).reduce((sum, count) => sum + count, 0);
           const summary = Object.entries(result.databases)
             .map(([name, count]) => `${name}: ${count}`)
             .join("\n");
+          const refreshed = await executeCoachTool(
+            "run_script",
+            { script: "notion.mjs", args: ["sync-dashboard"] },
+            chatId,
+          );
+          const refreshWarning =
+            refreshed.error || refreshed.exitCode
+              ? "\n\nThe reset completed, but page summaries did not finish refreshing. Displayed charts may still show old values. Ask me to refresh the dashboard when Notion is available."
+              : "";
           await replyTo(
-            `Reset complete. Archived ${total} database row(s), ${result.weeklyPlanPages} weekly plan page(s), and deleted ${result.calendarEvents} one-off workout event(s).\n\nRows by database:\n${summary}\n\nFood Library, the Exercise Library, imported reference pages, recurring calendar events, bot settings, profile, and reminders were kept. Telegram messages were not changed; clear those in the Telegram app if you want them gone.${result.calendarConfigured ? "" : "\nGoogle Calendar was not configured, so calendar events were not checked or deleted."}`,
+            `Reset complete. Archived ${total} database row(s), ${result.weeklyPlanEntries} saved weekly plan ${result.weeklyPlanEntries === 1 ? "entry" : "entries"}, ${result.weeklyPlanPages} older weekly plan page(s), and deleted ${result.calendarEvents} one-off workout event(s).\n\nRows by database:\n${summary}\n\nMain workspace pages, Food Library, the Exercise Library, imported reference pages, recurring calendar events, bot settings, profile, and reminders were kept. Telegram messages were not changed; clear those in the Telegram app if you want them gone.${result.calendarConfigured ? "" : "\nGoogle Calendar was not configured, so calendar events were not checked or deleted."}${refreshWarning}`,
           );
         } catch (err) {
           console.error("[resetdata] Notion reset failed:", (err as Error).message);
           await replyTo(
-            `Reset stopped: ${(err as Error).message} Some Notion rows/pages may already be in Notion Trash, and some calendar events may already have been deleted. Check both services before retrying.`,
+            `Reset stopped: ${(err as Error).message} Some Notion rows, plan entries, or older pages may already be archived, and some calendar events may already have been deleted. Check both services before retrying.`,
           );
         } finally {
           activeDataResets.delete(chatId);
@@ -654,11 +663,16 @@ bot.on("message", async (ctx) => {
         const summary = Object.entries(preview.databases)
           .map(([name, count]) => `${name}: ${count}`)
           .join("\n");
+        const planEntries = preview.weeklyPlanEntries.length
+          ? preview.weeklyPlanEntries
+              .map((entry) => `- ${entry.title} (under ${entry.parent})`)
+              .join("\n")
+          : "- No saved weekly plan entries found";
         const planPages = preview.weeklyPlanPages.length
           ? preview.weeklyPlanPages
               .map((page) => `- ${page.title} (under ${page.parent})`)
               .join("\n")
-          : "- No dated weekly plan pages found";
+          : "- No older dated weekly plan pages found";
         const calendarEvents = preview.calendar.configured
           ? preview.calendar.events.length
             ? preview.calendar.events
@@ -670,7 +684,7 @@ bot.on("message", async (ctx) => {
             : "- No one-off workout plan events found; recurring events are kept"
           : "- Not configured; calendar events cannot be checked and will be skipped";
         await replyTo(
-          `Reset preview (expires in 5 minutes)\n\nNotion rows to archive:\n${summary}\n\nDated weekly plan pages to archive:\n${planPages}\n\nOne-off workout events to delete:\n${calendarEvents}\n\nFood Library, Exercise Library, imported reference pages, recurring calendar events, profile, settings, reminders, and Telegram messages are kept. Review the listed pages/events. To proceed, send exactly:\n/resetdata confirm reset my data\n\nSend /resetdata cancel to cancel.`,
+          `Reset preview (expires in 5 minutes)\n\nNotion rows to archive:\n${summary}\n\nSaved weekly plan entries to archive:\n${planEntries}\n\nOlder dated weekly plan pages to archive:\n${planPages}\n\nOne-off workout events to delete:\n${calendarEvents}\n\nMain workspace pages, Food Library, Exercise Library, imported reference pages, recurring calendar events, profile, settings, reminders, and Telegram messages are kept. Review the listed entries, pages, and events. To proceed, send exactly:\n/resetdata confirm reset my data\n\nSend /resetdata cancel to cancel.`,
         );
       } catch (err) {
         await replyTo(`Can't prepare reset preview: ${(err as Error).message}`);

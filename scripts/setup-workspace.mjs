@@ -9,7 +9,7 @@
  *   4. Workout Log DB   (has a relation to Programs, so Programs must exist first)
  *   5. Meal Log DB      (food logging: calories and protein per meal)
  *   6. an initial Programs row (only if Programs is empty)
- *   7. Dashboard page    (4 rows, with the next-session context first)
+ *   7. five daily-use pages, with supporting records grouped in Resources
  *
  * Idempotent: existing databases/pages under the Hub are detected by title and
  * reused, never duplicated. All resolved ids (databases, hub, dashboard page,
@@ -22,10 +22,21 @@
  * Usage:
  *   node scripts/setup-workspace.mjs                 # build/repair, keep existing dashboard content
  *   node scripts/setup-workspace.mjs --rebuild-dashboard
+ *   node scripts/setup-workspace.mjs --compact-layout  # verify linked views, group existing records
  *   node scripts/setup-workspace.mjs --hub <pageId>  # override NOTION_PARENT_PAGE_ID
  */
 import fs from "node:fs";
 import path from "node:path";
+import {
+  compactWorkspaceLayout,
+  ensureSourceViews,
+  ensureWorkspacePages,
+  initializeWorkspacePages,
+  listLayoutChildren,
+  selectWorkspaceDatabase,
+  updateWorkspaceNavigation,
+  workspaceNavigation,
+} from "./notion-layout.mjs";
 
 const TOKEN = process.env.NOTION_TOKEN;
 const API = "https://api.notion.com/v1";
@@ -70,13 +81,13 @@ if (!HUB) {
 const MAX_RETRIES = 5;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function api(pathname, method, body) {
+async function api(pathname, method = "GET", body = undefined, version = "2022-06-28") {
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(`${API}/${pathname}`, {
       method,
       headers: {
         Authorization: `Bearer ${TOKEN}`,
-        "Notion-Version": "2022-06-28",
+        "Notion-Version": version,
         "Content-Type": "application/json",
       },
       body: body ? JSON.stringify(body) : undefined,
@@ -122,12 +133,11 @@ function writeCache(c) {
   fs.renameSync(tmp, CACHE_FILE);
 }
 const cache = readCache();
+let layout;
 
 // ─── block helpers (from the build spec) ─────────────────────────────────────
 const RT = (t) => [{ type: "text", text: { content: t } }];
-const RTb = (t) => [{ type: "text", text: { content: t }, annotations: { bold: true } }];
 const h2 = (t) => ({ type: "heading_2", heading_2: { rich_text: RT(t) } });
-const h3 = (t) => ({ type: "heading_3", heading_3: { rich_text: RT(t) } });
 const p = (t) => ({ type: "paragraph", paragraph: { rich_text: RT(t) } });
 const bul = (t) => ({ type: "bulleted_list_item", bulleted_list_item: { rich_text: RT(t) } });
 const div = () => ({ type: "divider", divider: {} });
@@ -137,13 +147,6 @@ const box = (t, e, c = "default") => ({
   callout: { rich_text: RT(t), icon: { type: "emoji", emoji: e }, color: c },
 });
 const q = (t) => ({ type: "quote", quote: { rich_text: RT(t) } });
-// Inline link to a Notion page/database, for the Dashboard's index row.
-const pageUrl = (id) => `https://www.notion.so/${(id ?? "").replace(/-/g, "")}`;
-const link = (label, id) => ({
-  type: "text",
-  text: { content: label, link: { url: pageUrl(id) } },
-});
-const sep = () => ({ type: "text", text: { content: "   ·   " } });
 // Column layout: children go INSIDE column_list, each column needs >=1 block.
 const colList = (...columns) => ({
   type: "column_list",
@@ -161,33 +164,38 @@ async function append(parentId, blocks) {
 }
 
 // ─── discovery / idempotency ─────────────────────────────────────────────────
-/** Map of child databases under the Hub: lowercased title -> id. */
+/** Resolve original source databases across the Hub's nested resource pages. */
 async function hubChildDatabases() {
   const map = {};
-  let cursor;
-  do {
-    const qs = cursor ? `?start_cursor=${cursor}` : "";
-    const res = await api(`blocks/${HUB}/children${qs}`);
-    for (const b of res.results ?? []) {
-      if (b.type === "child_database") map[(b.child_database?.title ?? "").toLowerCase()] = b.id;
-    }
-    cursor = res.has_more ? res.next_cursor : undefined;
-  } while (cursor);
+  for (const title of [
+    "Programs",
+    "Goals",
+    "Body Stats",
+    "Workout Log",
+    "Meal Log",
+    "Food Library",
+  ]) {
+    const id = selectWorkspaceDatabase(layout.discovery, title, cache, HUB);
+    if (id) map[title.toLowerCase()] = id;
+  }
   return map;
 }
 
 /** First child page under the Hub with the given title, or null. */
 async function findHubChildPage(title) {
-  let cursor;
-  do {
-    const qs = cursor ? `?start_cursor=${cursor}` : "";
-    const res = await api(`blocks/${HUB}/children${qs}`);
-    for (const b of res.results ?? []) {
-      if (b.type === "child_page" && (b.child_page?.title ?? "") === title) return b.id;
-    }
-    cursor = res.has_more ? res.next_cursor : undefined;
-  } while (cursor);
-  return null;
+  const matches = layout.discovery.pages.filter((page) => page.title === title);
+  const preferred =
+    title === "Knowledge Base"
+      ? cache.__knowledgeBase
+      : title === "Training Calendar"
+        ? cache.__trainingCalendar
+        : cache.__workspacePages.dashboard;
+  const found = matches.find(
+    (page) => page.id.replace(/-/g, "") === (preferred ?? "").replace(/-/g, ""),
+  );
+  if (found) return found.id;
+  if (matches.length > 1) throw new Error(`Several ${title} pages exist. Setup will not guess.`);
+  return matches[0]?.id ?? null;
 }
 
 async function ensureDatabase(title, properties, existing) {
@@ -197,7 +205,7 @@ async function ensureDatabase(title, properties, existing) {
     return found;
   }
   const db = await api("databases", "POST", {
-    parent: { type: "page_id", page_id: HUB },
+    parent: { type: "page_id", page_id: cache.__resources },
     title: [{ type: "text", text: { content: title } }],
     properties,
   });
@@ -222,6 +230,7 @@ async function ensureProperty(dbId, name, def) {
 // ─── build ───────────────────────────────────────────────────────────────────
 async function main() {
   cache.__hub = HUB;
+  layout = await ensureWorkspacePages(api, HUB, cache, writeCache);
   const existing = await hubChildDatabases();
 
   // 1. Programs
@@ -400,8 +409,15 @@ async function main() {
   //    refreshed by publish-heatmap.mjs after sessions are logged.
   await ensureTrainingCalendar();
 
+  await initializeWorkspacePages(api, cache, layout.created, writeCache);
+
   // 9. Dashboard page (links to everything above).
   await ensureDashboard();
+
+  if (flag("compact-layout")) {
+    await compactWorkspaceLayout(api, HUB, cache, writeCache);
+    await updateWorkspaceNavigation(api, cache);
+  } else await ensureSourceViews(api, cache, writeCache);
 
   writeCache(cache);
   console.log("\nWorkspace ready. Ids cached to data/notion-ids.json");
@@ -411,7 +427,7 @@ async function ensureTrainingCalendar() {
   let pageId = await findHubChildPage("Training Calendar");
   if (!pageId) {
     const page = await api("pages", "POST", {
-      parent: { type: "page_id", page_id: HUB },
+      parent: { type: "page_id", page_id: cache.__workspacePages.workouts },
       icon: { type: "emoji", emoji: "🗓️" },
       properties: { title: { title: RT("Training Calendar") } },
     });
@@ -424,21 +440,18 @@ async function ensureTrainingCalendar() {
 }
 
 async function ensureDashboard() {
-  let pageId = await findHubChildPage("Dashboard");
-  if (!pageId) {
-    const page = await api("pages", "POST", {
-      parent: { type: "page_id", page_id: HUB },
-      icon: { type: "emoji", emoji: "🏠" },
-      properties: { title: { title: RT("Dashboard") } },
-    });
-    pageId = page.id;
-    console.log(`+ created Dashboard page (${pageId})`);
+  const pageId = cache.__workspacePages.dashboard;
+  const children = await listLayoutChildren(api, pageId);
+  if (children.length === 0) {
     await buildDashboardBody(pageId);
+    console.log(`+ initialized Dashboard page (${pageId})`);
   } else if (flag("rebuild-dashboard")) {
     console.log(`~ rebuilding Dashboard page (${pageId})`);
-    // Clear existing top-level blocks, then rebuild.
-    const kids = await api(`blocks/${pageId}/children`);
-    for (const b of kids.results ?? []) await api(`blocks/${b.id}`, "DELETE");
+    // Explicit rebuild preserves linked child pages/databases and user data.
+    for (const block of children) {
+      if (block.type !== "child_page" && block.type !== "child_database")
+        await api(`blocks/${block.id}`, "DELETE");
+    }
     await buildDashboardBody(pageId);
   } else {
     console.log(`= Dashboard page exists (${pageId})`);
@@ -447,52 +460,14 @@ async function ensureDashboard() {
 }
 
 async function buildDashboardBody(pageId) {
-  // Hero, then two compact navigation rows linking to the rest of the workspace.
-  // Keep this copy data-neutral: the dashboard is a template and must not imply
-  // a program or week that has not been read from the user's actual records.
-  const trainingLinks = [
-    link("Programs", cache.Programs),
-    sep(),
-    link("Goals", cache.Goals),
-    sep(),
-    link("Body Stats", cache["Body Stats"]),
-    sep(),
-    link("Workout Log", cache["Workout Log"]),
-  ];
-  if (cache.__trainingCalendar)
-    trainingLinks.push(sep(), link("Training Calendar", cache.__trainingCalendar));
-
-  const referenceLinks = [
-    link("Meal Log", cache["Meal Log"]),
-    sep(),
-    link("Food Library", cache["Food Library"]),
-  ];
-  if (cache.__exerciseLibrary)
-    referenceLinks.push(sep(), link("Exercise Library", cache.__exerciseLibrary));
-  if (cache.__knowledgeBase)
-    referenceLinks.push(sep(), link("Knowledge Base", cache.__knowledgeBase));
-
+  // Keep navigation to the five daily-use pages. Supporting source databases
+  // remain reachable through Food & Knowledge's grouped resources.
   await append(pageId, [
     box("YOUR TRAINING HQ · real progress, one place", "🏋️", "blue_background"),
     p(
       "Log sessions and meals in Telegram. Your next-session card uses your saved plan and actual workout history.",
     ),
-    {
-      type: "callout",
-      callout: {
-        icon: { type: "emoji", emoji: "🏋️" },
-        color: "gray_background",
-        rich_text: trainingLinks,
-      },
-    },
-    {
-      type: "callout",
-      callout: {
-        icon: { type: "emoji", emoji: "📚" },
-        color: "default",
-        rich_text: referenceLinks,
-      },
-    },
+    workspaceNavigation(cache),
     div(),
   ]);
   // Notion requires a column_list to contain at least two columns. Keep the
@@ -530,7 +505,7 @@ async function buildDashboardBody(pageId) {
       [box("Goals", "🎯", "brown_background"), bul("Add a goal to populate this tile.")],
       [
         box("Active Program", "📋", "yellow_background"),
-        p("Your current program and goals live in the linked pages above."),
+        p("Your current program and goals remain in Food & Knowledge's workspace resources."),
         q(
           "Progress the movements you actually do; change an exercise only when there is a clear reason.",
         ),
@@ -564,7 +539,7 @@ async function ensureKnowledgeBase() {
   let pageId = await findHubChildPage("Knowledge Base");
   if (!pageId) {
     const page = await api("pages", "POST", {
-      parent: { type: "page_id", page_id: HUB },
+      parent: { type: "page_id", page_id: cache.__foodKnowledge },
       icon: { type: "emoji", emoji: "📚" },
       properties: { title: { title: RT("Knowledge Base") } },
     });
@@ -643,8 +618,8 @@ const TILE_ROWS = [
   ["quickCommands", "messageCoach"],
 ];
 async function captureTileColumns(pageId) {
-  const top = await api(`blocks/${pageId}/children`);
-  const lists = (top.results ?? []).filter((b) => b.type === "column_list");
+  const top = await listLayoutChildren(api, pageId);
+  const lists = top.filter((b) => b.type === "column_list");
   const out = { listId: lists[0]?.id };
   for (let r = 0; r < lists.length && r < TILE_ROWS.length; r++) {
     const cols = await api(`blocks/${lists[r].id}/children`);

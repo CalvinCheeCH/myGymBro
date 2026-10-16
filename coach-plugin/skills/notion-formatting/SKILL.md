@@ -29,7 +29,10 @@ The helper's markdown understands: `#`/`##`/`###` headings, `> [!note] text` cal
 :::
 ```
 
-Note: Notion's public API cannot create or configure database *views* (grouping, default filters). After setup-notion creates a database, tell the user to set the default view by hand once; it cannot be done programmatically.
+The workspace builder configures linked database tables with Notion's
+`2026-03-11` layout API. Use `setup-workspace.mjs --compact-layout` for the five-page
+navigation layout; keep ordinary record writes in the existing helper. Changing
+the page layout must not create replacement source databases or break their ids.
 
 ## Principles (from Notion's own design guidance)
 
@@ -60,7 +63,16 @@ Note: Notion's public API cannot create or configure database *views* (grouping,
 - Default to a column layout, not a flat list of paragraphs and bullets. A flat stack on an overview page is a redirect waiting to happen.
 - Use coloured callout tiles (each with an emoji) inside columns: for example a Goals tile, a This Week tile, and a Body Stats tile side by side.
 - Dividers between major sections, H2/H3 headings per area, and a quote block for a coaching note.
-- Make it the central index: near the top, a compact linked row (a single callout works well) pointing to the key pages and databases (Programs, Goals, Body Stats, Workout Log, Knowledge Base), so the user can navigate from one place. Keep it to one tidy line, not a long list. Build links as rich text with a `link` (`{ type:"text", text:{ content:"Workout Log", link:{ url:"https://www.notion.so/<id-without-dashes>" } } }`), using ids from `data/notion-ids.json`. The default Dashboard built by setup-workspace.mjs already includes this row; preserve it when you rebuild or refresh.
+- Make it the central index: the compact navigation callout contains exactly **Dashboard, Workout Log, Meal Log, Weekly Plan, and Food & Knowledge**. Use their page ids from `data/notion-ids.json` under `__workspacePages`, not the similarly named source-database ids. Build links as rich text with a `link` (`{ type:"text", text:{ content:"Workout Log", link:{ url:"https://www.notion.so/<id-without-dashes>" } } }`). Programs, Goals, Body Stats, and the source databases belong in Food & Knowledge's Workspace Resources, while Training Calendar is reached inside Workout Log. Preserve this hierarchy when refreshing display blocks.
+
+**Meal Log overview page**
+- Keep the visible `Daily nutrition` callout above the `Recorded meals` heading and linked table. Its children are managed summary content, separate from the meal records and navigation. Use `__nutritionSummary.pageId` and `.blockId` from the cache to target that container.
+- The empty template should say intake has not been synced. Derive live values from the actual Meal Log and the user's stated targets; never insert fictional intake or an assumed target.
+- Refresh the managed summary children only. Do not clear the whole Meal Log overview or replace its linked table when nutrition changes.
+
+**Food & Knowledge / resources**
+- Keep the saved-food table, Knowledge Base, and Exercise Library easy to reach. Put Programs, Goals, Body Stats, and source-database links in the nested Workspace Resources page rather than adding more main-navigation tabs.
+- Preserve every source id, row, relation, and imported reference when reorganizing. Linked tables display the same source data; they are not new storage or permission boundaries.
 
 **Workout Log row**
 - Keep the structured values (Date, Focus, Status, Top Set, Volume, RPE, Duration, Week, Day, Program) in the database properties, not the body. See `docs/notion-architecture.md` for the exact schema.

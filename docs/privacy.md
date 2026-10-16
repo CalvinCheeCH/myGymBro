@@ -23,6 +23,10 @@ GitHub receives your committed repository and commit metadata when you push. It 
 not automatically receive ignored local runtime files. Already-tracked files, past
 commits, screenshots, or manually uploaded artifacts can still expose private data.
 
+Daily nutrition graphs are rendered locally, then uploaded directly to Notion and
+displayed on Dashboard and Meal Log. Their calories/protein totals are not sent to
+QuickChart. Training report images still use QuickChart as described above.
+
 ## Default controls
 
 - One owner per deployment. Use only your own `ALLOWED_TELEGRAM_IDS` and matching
@@ -54,6 +58,9 @@ and keep credentials out of model-visible notes and public bug reports.
   Meal Log, Body Stats, Goals, Programs, and dated plan records, and deletes listed
   one-off workout calendar events. Libraries, profile/settings, reminders, recurring
   events, and Telegram history remain. Notion archive/Trash is not permanent erasure.
+  The reset refreshes active nutrition chart blocks, but cannot erase earlier image
+  uploads: Notion currently provides no API to delete or revoke an attached file upload,
+  even after its blocks are removed. See [Notion's file lifecycle documentation](https://developers.notion.com/guides/data-apis/uploading-small-files#file-lifecycle-and-reuse).
 - Stop the bot before manually managing local `data/` records or private profile
   files. Back up what you need; deletion of state can require reconnecting Calendar
   or recreating workspace caches. Review backups separately.

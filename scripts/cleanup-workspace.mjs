@@ -7,16 +7,15 @@
  *
  * Reports:
  *   - child pages with no content blocks (empty), except the protected
- *     Dashboard / Knowledge Base / Training Calendar pages (never archived,
- *     even when empty);
- *   - child databases with no rows (listed only, never archived: an empty
+ *     workspace pages (never archived, even when empty);
+ *   - direct Hub child databases with no rows (listed only, never archived: an empty
  *     Food Library on day one is expected, not junk);
  *   - calendar dates holding more than one row in Workout Log / Meal Log
  *     (one-row-per-day violations: merge with migrate-consolidate.mjs, which
  *     owns the merge and is only suggested, never run from here).
  *
  * With --apply it also archives the empty unprotected pages and stamps the
- * three workspace pages with their canonical emoji icons. Archiving in Notion
+ * legacy workspace pages with their canonical emoji icons. Archiving in Notion
  * is a soft delete (restorable from Trash for 30 days).
  */
 import fs from "node:fs";
@@ -43,7 +42,17 @@ const HUB = (opt("hub") ?? process.env.NOTION_PARENT_PAGE_ID ?? pinnedHub() ?? "
 );
 const APPLY = process.argv.includes("--apply");
 
-const PROTECTED_PAGES = new Set(["Dashboard", "Knowledge Base", "Training Calendar"]);
+const PROTECTED_PAGES = new Set([
+  "dashboard",
+  "workout log",
+  "meal log",
+  "weekly plan",
+  "food & knowledge",
+  "resources",
+  "workspace resources",
+  "knowledge base",
+  "training calendar",
+]);
 const PAGE_ICONS = { Dashboard: "🏠", "Knowledge Base": "📚", "Training Calendar": "🗓️" };
 
 async function listChildren(blockId) {
@@ -70,6 +79,9 @@ async function main() {
   const kids = await listChildren(HUB);
   const pages = kids.filter((b) => b.type === "child_page");
   const dbs = kids.filter((b) => b.type === "child_database");
+  console.log(
+    "Database audit covers direct Hub databases only; sources nested in Resources or other pages are not checked.",
+  );
 
   // 1. Empty pages (archived only with --apply, never when protected).
   for (const p of pages) {
@@ -79,7 +91,7 @@ async function main() {
       console.log(`= page "${title}" has ${blocks.length} block(s), kept.`);
       continue;
     }
-    if (PROTECTED_PAGES.has(title)) {
+    if (PROTECTED_PAGES.has(title.toLowerCase())) {
       console.log(`= page "${title}" is empty but protected, kept.`);
       continue;
     }

@@ -1,10 +1,14 @@
 # Notion workspace architecture
 
 The coaching workspace lives under one root Notion page (the **Hub**, set via
-`NOTION_PARENT_PAGE_ID`). Six databases and three pages (a Dashboard, a
-Knowledge Base, and a Training Calendar) hang directly off it. The whole thing
-is built deterministically by `scripts/setup-workspace.mjs` and maintained
-through `scripts/notion.mjs`.
+`NOTION_PARENT_PAGE_ID`). Its five main pages are **Dashboard, Workout Log,
+Meal Log, Weekly Plan, and Food & Knowledge**. The Workout Log and Meal Log pages
+show linked tables of their original database records. Food & Knowledge contains
+the saved-food table, reference links, and a nested **Workspace Resources** page
+holding the six source databases. Knowledge Base sits under Food & Knowledge;
+Training Calendar sits under Workout Log. The workspace is built deterministically
+by `scripts/setup-workspace.mjs`, with layout helpers in `scripts/notion-layout.mjs`,
+and maintained through `scripts/notion.mjs`.
 
 Instance-specific ids (Hub, each database, the Dashboard page, and its column
 ids) are **not hardcoded** anywhere in the repo. They are discovered at build
@@ -15,20 +19,32 @@ cache or by name lookup, never from a literal in code.
 
 Relations force the order: a database referenced by a relation must exist first.
 
-1. **Programs**
-2. **Goals**
-3. **Body Stats**
-4. **Workout Log** (has a `Program` relation to Programs)
-5. **Meal Log**
-6. an initial Programs row (only if Programs is empty)
-7. **Knowledge Base** page (where dumped training programs are filed as subpages)
-8. **Training Calendar** page (the GitHub-style workout calendar; built before
-   the Dashboard so the Dashboard can link to it)
-9. **Dashboard** page
+1. Discover the existing Hub subtree, create/reuse the five page shells, and
+   create/reuse Workspace Resources beneath Food & Knowledge.
+2. **Programs**, **Goals**, **Body Stats**, **Workout Log** (which relates to
+   Programs), **Meal Log**, and **Food Library**, reusing the original source ids.
+3. An initial Programs row, only if Programs is empty.
+4. **Knowledge Base**, its **Exercise Library**, and **Training Calendar**.
+5. Empty, data-neutral overview bodies and the Dashboard tile layout.
+6. Linked Workout Log, Meal Log, and Food Library tables using the original data
+   sources. No meal, workout, measurement, or goal examples are seeded.
 
 Run it with: `node scripts/setup-workspace.mjs` (idempotent: existing
 databases/pages are detected by title and reused, never duplicated). Add
-`--rebuild-dashboard` to regenerate the Dashboard body.
+`--rebuild-dashboard` to explicitly regenerate the Dashboard display body.
+For an existing workspace, `--compact-layout` verifies the linked tables first,
+then moves the same source databases into Workspace Resources and the known
+supporting pages into their corresponding main pages. Original ids, relations,
+rows, and page bodies remain intact. Unrelated legacy pages are not automatically
+moved or archived. Back up custom Dashboard prose before an explicit rebuild.
+
+The cache keeps the original database keys (`Programs`, `Goals`, `Body Stats`,
+`Workout Log`, `Meal Log`, `Food Library`) as **database ids**. Main page ids live
+under `__workspacePages` (`dashboard`, `workouts`, `meals`, `weeklyPlan`,
+`foodKnowledge`, `resources`). `__weeklyPlan`, `__foodKnowledge`, `__resources`,
+and `__mealLogPage` are convenience aliases. `__workspaceViews` stores each linked
+container, view id when available, original source database, and data-source id;
+linked container ids must never overwrite the source-database keys.
 
 ## API patterns
 
@@ -37,6 +53,11 @@ databases/pages are detected by title and reused, never duplicated). Add
   `Authorization: Bearer $NOTION_TOKEN`, `Notion-Version: 2022-06-28`,
   `Content-Type: application/json`. Both helper scripts retry with backoff on
   HTTP 429 (rate limit, approx 3 req/s per integration) and transient 5xx.
+- Layout-only requests use `Notion-Version: 2026-03-11`: `POST /views` creates
+  linked table containers, `PATCH /databases/{id}` changes the parent without
+  copying records, and `POST /pages/{id}/move` nests supporting pages. A linked
+  table is verified to reference the same data source before an original source
+  database is moved. Writes are not replayed after ambiguous 5xx responses.
 - **Columns:** children go *inside* the `column_list` object
   (`{ type:"column_list", column_list:{ children:[...] } }`), and every `column`
   needs at least one child block (an empty paragraph as placeholder). The
@@ -110,8 +131,8 @@ so repeat foods converge on label truth instead of fresh guesses.
 
 ## Dashboard
 
-A page (not a database): a data-neutral hero, two compact linked navigation
-rows, a two-column Next Session/progression row, compact weekly/nutrition/body
+A page (not a database): a data-neutral hero, one compact linked navigation
+row, a two-column Next Session/progression row, compact weekly/nutrition/body
 stat tiles, goals/program tiles, quick commands and message-coach guidance,
 then a Training Calendar section. Keep the dashboard truthful before any logs
 exist; never seed sample program dates, workout counts, or measurements as if
@@ -119,15 +140,18 @@ they were live data:
 
 - Hero: blue callout with a short purpose statement and a note that tiles reflect
   saved Notion records
-- Navigation: one link row for training pages and one for meal and reference
-  pages, including the Exercise Library
+- Navigation: Dashboard, Workout Log, Meal Log, Weekly Plan, and Food & Knowledge.
+  Source databases and supporting records are reached inside those pages.
 - Row 1: 2 columns (Next Session, Progression). Notion requires at least two
   columns in a column list; the primary Next Session card comes first.
   `sync-dashboard` derives its
   context from the most recently logged actual sets and checks for the exact
-  current-week `Weekly Plan - YYYY-MM-DD` page. If workout history cannot be
+  current-week dated entry on the single **Weekly Plan** page. If workout history cannot be
   read, it displays an explicit unavailable state instead of stale sets.
-- Row 2: 3 columns (This Week, Nutrition, Body Stats)
+- Row 2: 3 columns (This Week, Nutrition, Body Stats). Daily nutrition uses calorie
+  and protein rings against the targets in `PERSONAL.md`, mirrored above the Meal
+  Log's recorded days. Both use the same dated totals. PNGs are rendered locally
+  and uploaded directly to Notion; no chart-rendering service receives meal data.
 - Row 3: 2 columns (Goals, Active Program + progression guidance)
 - Row 4: 2 columns (Quick Commands, Message Your Coach)
 - Training Calendar section: `## Training Calendar` heading plus a compact
@@ -161,6 +185,13 @@ node scripts/notion.mjs refresh-tile --tile bodyStats --md "..."
 ```
 
 ## Nutrition tile and daily targets
+
+The **Meal Log overview page** also reserves a visible `Daily nutrition` callout
+above its `Recorded meals` heading and linked table. The managed summary container
+is cached as `__nutritionSummary: { pageId, blockId }`. Its child blocks can be
+refreshed independently of navigation and source records; never clear the whole
+overview to refresh a nutrition display. The initial body is an explicit empty
+state, with no assumed target or fabricated intake.
 
 The Nutrition tile is data-derived like the Dashboard's other summary tiles: `sync-dashboard`
 re-derives it from today's Meal Log rows (sum of calories and protein) versus

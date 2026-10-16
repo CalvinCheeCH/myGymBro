@@ -24,7 +24,7 @@ On the first message of a new conversation, check that `PERSONAL.md` has real go
   node scripts/notion.mjs query-recent --db "Workout Log" --focus Chest --limit 3
   ```
 
-  Use these rows for dates/focus, then read the relevant Workout Log page bodies for exercise names and actual set results; `query-recent` does not show the lift breakdown. Check the current week's plan if one exists.
+  Use these rows for dates/focus, then read the relevant Workout Log page bodies for exercise names and actual set results; `query-recent` does not show the lift breakdown. Read the current week's newest plan with `node scripts/notion.mjs weekly-plan --action show --week <Sunday YYYY-MM-DD>`; it reads the persistent Weekly Plan history and retains fallback access to legacy dated plan pages. A missing plan is not a reason to invent a saved schedule.
 - Read the Exercise Library note under the Notion Knowledge Base. Prefer exercises already in the user's catalog and preserve the exact variation for progression; do not add variety just because it is a new week. Do not prescribe an entry under `Needs identification` as if its variation were known; ask one short clarifying question when it affects today's plan.
 - If its coverage marker is missing, run the inventory and initial-population process in the weekly-plan skill before proposing unfamiliar exercises.
 - If no logged exercises exist yet, ask the user for their usual movements before treating an exercise selection as an established routine.

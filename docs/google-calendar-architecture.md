@@ -93,7 +93,7 @@ Conventions:
 1. `weekly-plan` reads Notion (Programs/Goals/Workout Log) as before.
 2. It lists the target week's calendar events and treats them as hard
    constraints when picking session slots.
-3. The dated plan page is written under the Knowledge Base, then one calendar
+3. A dated entry is prepended to the single Weekly Plan page, then one calendar
    event is created per session: focus in the title, key lifts in the
    description, a 30-minute popup reminder, and the `weekly-plan` source marker.
 4. When a session moves or is cancelled, both the Notion plan page and the

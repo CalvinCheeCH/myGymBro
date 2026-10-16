@@ -14,18 +14,25 @@ const ID_CACHE = path.resolve(process.cwd(), "data", "notion-ids.json");
 
 type DatabaseName = (typeof DATABASES)[number];
 type NotionPage = { id: string };
-type NotionBlock = { id: string; type: string; child_page?: { title?: string } };
+type NotionBlock = {
+  id: string;
+  type: string;
+  child_page?: { title?: string };
+  callout?: { rich_text?: Array<{ plain_text?: string; text?: { content?: string } }> };
+};
 type WorkspaceIds = Record<string, unknown>;
 
 export type WeeklyPlanPage = { id: string; title: string; parent: string };
 export type ResetSnapshot = {
   rows: Record<DatabaseName, NotionPage[]>;
   weeklyPlanPages: WeeklyPlanPage[];
+  weeklyPlanEntries: WeeklyPlanPage[];
   calendar: ResetCalendarSnapshot;
 };
 export type ResetPreview = {
   databases: Record<DatabaseName, number>;
   weeklyPlanPages: Array<Pick<WeeklyPlanPage, "title" | "parent">>;
+  weeklyPlanEntries: Array<Pick<WeeklyPlanPage, "title" | "parent">>;
   calendar: ResetCalendarSnapshot;
 };
 
@@ -142,17 +149,21 @@ function isDatedWeeklyPlan(title: string): boolean {
   );
 }
 
-async function findWeeklyPlanPages(): Promise<WeeklyPlanPage[]> {
+async function findWeeklyPlans(): Promise<{
+  pages: WeeklyPlanPage[];
+  entries: WeeklyPlanPage[];
+}> {
   const ids = workspaceIds();
-  const hubId = ids.__hub ?? config.notionParentPageId;
+  const hubId = config.notionParentPageId || ids.__hub;
   if (typeof hubId !== "string" || !/^[\da-f-]{32,36}$/i.test(hubId)) {
     throw new Error("Notion Hub ID is missing or invalid; reset stopped without changes.");
   }
 
   const found: WeeklyPlanPage[] = [];
+  const entries: WeeklyPlanPage[] = [];
   const seen = new Set<string>();
   const scan = async (parentId: string, parentTitle: string, depth: number): Promise<void> => {
-    if (depth > 3 || seen.has(parentId)) return;
+    if (depth > 5 || seen.has(parentId)) return;
     seen.add(parentId);
     for (const block of await listChildren(parentId)) {
       if (block.type !== "child_page" || !block.child_page?.title) continue;
@@ -163,22 +174,40 @@ async function findWeeklyPlanPages(): Promise<WeeklyPlanPage[]> {
         found.push({ id: block.id, title, parent: parentTitle });
         continue;
       }
+      if (title === "Weekly Plan") {
+        for (const entry of await listChildren(block.id)) {
+          const text = (entry.callout?.rich_text ?? [])
+            .map((part) => part.plain_text ?? part.text?.content ?? "")
+            .join("");
+          if (
+            entry.type === "callout" &&
+            (/^Weekly Plan - \d{4}-\d{2}-\d{2} · (?:Saved |Saving \(incomplete\) )\d{4}-\d{2}-\d{2}T/.test(
+              text,
+            ) ||
+              /^Weekly Plan history · \S/.test(text))
+          ) {
+            entries.push({ id: entry.id, title: text, parent: title });
+          }
+        }
+      }
       const isKnownContainer =
         depth === 0 ||
-        /^(?:knowledge base|weekly plans?|training plans?|plans?|training calendar)$/i.test(title);
+        /^(?:knowledge base|weekly plans?|training plans?|plans?|training calendar|food & knowledge|workspace resources|workspace archive|resources)$/i.test(
+          title,
+        );
       if (isKnownContainer) await scan(block.id, title, depth + 1);
     }
   };
 
   await scan(hubId, "Training Hub", 0);
-  return found;
+  return { pages: found, entries };
 }
 
 export async function prepareReset(): Promise<{ preview: ResetPreview; snapshot: ResetSnapshot }> {
   const rows = await currentRows();
-  const weeklyPlanPages = await findWeeklyPlanPages();
+  const { pages: weeklyPlanPages, entries: weeklyPlanEntries } = await findWeeklyPlans();
   const calendar = await previewCalendarReset();
-  const snapshot = { rows, weeklyPlanPages, calendar };
+  const snapshot = { rows, weeklyPlanPages, weeklyPlanEntries, calendar };
   return {
     snapshot,
     preview: {
@@ -187,6 +216,7 @@ export async function prepareReset(): Promise<{ preview: ResetPreview; snapshot:
         number
       >,
       weeklyPlanPages: weeklyPlanPages.map(({ title, parent }) => ({ title, parent })),
+      weeklyPlanEntries: weeklyPlanEntries.map(({ title, parent }) => ({ title, parent })),
       calendar,
     },
   };
@@ -195,6 +225,7 @@ export async function prepareReset(): Promise<{ preview: ResetPreview; snapshot:
 export type ResetResult = {
   databases: Record<DatabaseName, number>;
   weeklyPlanPages: number;
+  weeklyPlanEntries: number;
   calendarEvents: number;
   calendarConfigured: boolean;
 };
@@ -226,10 +257,20 @@ export async function archiveResetData(snapshot: ResetSnapshot): Promise<ResetRe
     archivedPlans++;
   }
 
+  let archivedEntries = 0;
+  for (const entry of snapshot.weeklyPlanEntries) {
+    const waitMs = Math.max(0, 350 - (Date.now() - lastArchiveAt));
+    if (lastArchiveAt && waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
+    await notion(`blocks/${entry.id}`, "PATCH", { archived: true });
+    lastArchiveAt = Date.now();
+    archivedEntries++;
+  }
+
   const calendarEvents = await deleteResetCalendarEvents(snapshot.calendar);
   return {
     databases: counts,
     weeklyPlanPages: archivedPlans,
+    weeklyPlanEntries: archivedEntries,
     calendarEvents,
     calendarConfigured: snapshot.calendar.configured,
   };

@@ -120,6 +120,9 @@ progress through a conversation in Telegram.
 - **Your fitness history, organized.** `/setup` builds your Notion workspace with
   workouts, meals, programs, goals, body measurements, and reference material. A dashboard
   and training heatmap make your records easier to revisit and use for future planning.
+  Five main pages keep navigation simple: Dashboard, Workout Log, Meal Log,
+  Weekly Plan, and Food & Knowledge. Daily nutrition rings appear above the meal
+  history and on Dashboard; new weekly plans appear first on one scrollable page.
 - **Give your routine a regular nudge.** With scheduling configured, receive daily
   check-ins and weekly reviews. Connect Google Calendar to plan around your commitments
   and put training sessions on your calendar with phone reminders.

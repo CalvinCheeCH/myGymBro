@@ -22,11 +22,12 @@ fs.mkdirSync(path.join(workspace, "data/report-cards"));
 fs.mkdirSync(path.join(workspace, "data/linked"));
 
 let executions = [];
+let scriptError;
 mock.module("node:child_process", {
   namedExports: {
     execFile: (_file, args, _options, callback) => {
       executions.push(args);
-      callback(null, "synthetic output; no subprocess started", "");
+      callback(scriptError, "synthetic output; no subprocess started", "");
     },
   },
 });
@@ -43,6 +44,7 @@ assert.equal(PROJECT_ROOT, workspace);
 
 beforeEach(() => {
   executions = [];
+  scriptError = undefined;
 });
 after(() => {
   assert.equal(path.dirname(workspace), path.resolve(os.tmpdir()));
@@ -77,6 +79,39 @@ test("approved reads, repeated Notion properties and generated image paths still
     assert.equal(typeof result.output, "string");
   }
   assert.equal(executions.length, 3);
+});
+
+test("weekly plans and nutrition sync use the approved helper and keep its private-file boundary", async () => {
+  for (const args of [
+    ["weekly-plan", "--action", "show", "--week", "2026-10-11"],
+    ["weekly-plan", "--action", "save", "--week", "2026-10-11", "--md", "Synthetic weekly plan"],
+    ["weekly-plan", "--action", "save", "--week", "2026-10-11", "--file", "README.md"],
+    ["sync-nutrition"],
+  ]) {
+    const result = await executeCoachTool("run_script", { script: "notion.mjs", args }, "42");
+    assert.equal(typeof result.output, "string");
+  }
+  assert.equal(executions.length, 4);
+  for (const file of [".env", "data/report-card.png", "../private-canary"]) {
+    const result = await executeCoachTool(
+      "run_script",
+      { script: "notion.mjs", args: ["weekly-plan", "--action", "save", "--file", file] },
+      "42",
+    );
+    assert.equal(typeof result.error, "string");
+  }
+  assert.equal(executions.length, 4);
+});
+
+test("dashboard refresh preserves helper failure status for the reset completion notice", async () => {
+  const request = { script: "notion.mjs", args: ["sync-dashboard"] };
+  const success = await executeCoachTool("run_script", request, "42");
+  assert.equal(success.error, undefined);
+  assert.equal(success.exitCode, undefined);
+  scriptError = Object.assign(new Error("synthetic Notion failure"), { code: 1 });
+  const failure = await executeCoachTool("run_script", request, "42");
+  assert.equal(failure.exitCode, 1);
+  assert.equal(executions.length, 2);
 });
 
 test("credential and infrastructure secret files are unavailable inside readable directories", async () => {

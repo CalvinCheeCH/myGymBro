@@ -30,6 +30,8 @@
  *   node scripts/notion.mjs exercise-inventory       # all distinct logged exercise headings
  *   node scripts/notion.mjs exercise-library --action show
  *   node scripts/notion.mjs exercise-library --action replace --md "..."
+ *   node scripts/notion.mjs weekly-plan --action save --week 2026-10-11 --md "..."
+ *   node scripts/notion.mjs weekly-plan --action show --week 2026-10-11
  *   node scripts/notion.mjs lookup --db "Food Library" --field Name --contains "maggi"
  *   node scripts/notion.mjs log --db "Workout Log" \
  *        --set "Session=Push A" --set "Focus=Chest, Shoulders, Triceps" --set "Date=2026-06-23" \
@@ -78,7 +80,7 @@ function parseArgs(argv) {
   return args;
 }
 
-async function notion(pathname, method, body) {
+async function notion(pathname, method, body, { version = NOTION_VERSION } = {}) {
   if (!TOKEN) throw new Error("NOTION_TOKEN is not set. Notion is not configured.");
 
   for (let attempt = 0; ; attempt++) {
@@ -86,10 +88,11 @@ async function notion(pathname, method, body) {
       method,
       headers: {
         Authorization: `Bearer ${TOKEN}`,
-        "Notion-Version": NOTION_VERSION,
-        "Content-Type": "application/json",
+        "Notion-Version": version,
+        ...(body instanceof FormData ? {} : { "Content-Type": "application/json" }),
       },
-      body: body ? JSON.stringify(body) : undefined,
+      body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
+      redirect: "error",
     });
 
     // Rate limits are safe to retry. A 5xx is retried only for reads: a write
@@ -143,12 +146,12 @@ function writeCache(cache) {
 // Notion ids compare equal with or without dashes and regardless of case.
 const normId = (id) => (id ?? "").replace(/-/g, "").toLowerCase();
 
-// The pinned Hub (root) page. Every workspace object hangs directly off it, so
-// scoping name resolution to the Hub's children means a shared integration that
+// The pinned Hub (root) page. Workspace objects stay within this page's tree, so
+// scoping name resolution to that tree means a shared integration that
 // can see *other* Notion spaces (e.g. a demo workspace) can never resolve to a
-// stranger's database of the same name. Resolution order: id cache, then the
-// NOTION_PARENT_PAGE_ID env var, then config/notion-hub.json (a gitignored local
-// pin, copied from its .example, that survives restarts where the data/ cache starts empty).
+// stranger's database of the same name. Explicit environment or config pins take
+// precedence over the id cache. config/notion-hub.json is a gitignored local
+// pin, copied from its .example, that survives restarts where the data/ cache starts empty.
 const HUB_PIN_FILE = path.resolve(process.cwd(), "config", "notion-hub.json");
 function hubId() {
   const cache = readCache();
@@ -158,7 +161,7 @@ function hubId() {
   } catch {
     /* no pin file; env or cache must carry it */
   }
-  return normId(cache.__hub ?? process.env.NOTION_PARENT_PAGE_ID ?? pinned ?? "");
+  return normId(process.env.NOTION_PARENT_PAGE_ID ?? pinned ?? cache.__hub ?? "");
 }
 
 /** Paginated list of a block's (or page's) children. */
@@ -192,6 +195,43 @@ async function queryAllRows(databaseId, body = {}) {
     cursor = res.has_more ? res.next_cursor : undefined;
   } while (cursor);
   return rows;
+}
+
+/** Follow page ancestors so moving a source into Resources preserves Hub isolation. */
+async function pageIsWithinHub(pageId, hub) {
+  const seen = new Set();
+  let id = pageId;
+  while (id && seen.size < 20) {
+    if (normId(id) === normId(hub)) return true;
+    if (seen.has(normId(id))) return false;
+    seen.add(normId(id));
+    const page = await notion(`/pages/${id}`);
+    if (page.archived || page.in_trash) return false;
+    id = page.parent?.page_id;
+  }
+  return false;
+}
+
+/** Only layout folders are traversed; training rows and imported programs are not scanned. */
+async function workspaceDatabases(hub) {
+  const pages = [hub];
+  const seen = new Set();
+  const databases = [];
+  const folders =
+    /^(?:workspace resources|resources|food & knowledge|workout log|meal log|knowledge base)$/i;
+  while (pages.length) {
+    const parent = pages.shift();
+    if (seen.has(normId(parent))) continue;
+    seen.add(normId(parent));
+    for (const block of await listChildren(parent)) {
+      if (block.type === "child_database") {
+        databases.push({ id: block.id, name: block.child_database?.title ?? "" });
+      } else if (block.type === "child_page" && folders.test(block.child_page?.title ?? "")) {
+        pages.push(block.id);
+      }
+    }
+  }
+  return databases;
 }
 
 // ─── blocks → markdown (for read-blocks / migration) ────────────────────────
@@ -307,7 +347,11 @@ async function resolveDbId(dbRef) {
     try {
       const db = await notion(`/databases/${cache[dbRef]}`);
       const hub = hubId();
-      if (hub && normId(db.parent?.page_id) !== hub) {
+      if (
+        db.archived ||
+        db.in_trash ||
+        (hub && !(await pageIsWithinHub(db.parent?.page_id, hub)))
+      ) {
         throw new Error(`cached "${dbRef}" no longer lives under the Hub`);
       }
       return cache[dbRef];
@@ -322,9 +366,7 @@ async function resolveDbId(dbRef) {
   if (hub) {
     // Deterministic: enumerate the Hub's direct children. A child_database
     // block's id IS the database id.
-    candidates = (await listChildren(hub))
-      .filter((b) => b.type === "child_database")
-      .map((b) => ({ id: b.id, name: b.child_database?.title ?? "" }));
+    candidates = await workspaceDatabases(hub);
   } else {
     const found = await notion("/search", "POST", {
       query: dbRef,
@@ -374,17 +416,9 @@ const TILE_ROWS = [
   ["quickCommands", "messageCoach"],
 ];
 
-async function resolveDashboard(force = false) {
-  const cached = readCache().__dashboard;
-  if (!force && cached?.pageId && cached?.columns?.thisWeek) {
-    try {
-      await notion(`/blocks/${cached.columns.thisWeek}`);
-      return cached;
-    } catch {
-      /* stale (page rebuilt or deleted); re-resolve from the Hub below */
-    }
-  }
-
+async function resolveDashboard() {
+  // Re-read the Hub and column membership before writing private summaries.
+  // A valid cached block ID alone cannot prove it still belongs to this workspace.
   const hub = hubId();
   if (!hub) {
     throw new Error(
@@ -1114,15 +1148,198 @@ function renderNutritionTile(meals, targets = {}) {
   return lines.join("\n");
 }
 
-/** Weekly plans are dated by their Sunday and kept under the Knowledge Base. */
+const WEEKLY_PLAN_HISTORY = "Plan history";
+const weeklyPlanText = (block) =>
+  (block[block.type]?.rich_text ?? [])
+    .map((part) => part.plain_text ?? part.text?.content ?? "")
+    .join("");
+
+/** Only complete, helper-owned entries are active plans or reset targets. */
+function weeklyPlanEntryWeek(block) {
+  if (block.type !== "callout") return null;
+  return (
+    /^Weekly Plan - (\d{4}-\d{2}-\d{2}) · Saved \d{4}-\d{2}-\d{2}T/.exec(
+      weeklyPlanText(block),
+    )?.[1] ?? null
+  );
+}
+
+function validatePlanWeek(week) {
+  const date = new Date(`${week}T00:00:00Z`);
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(week ?? "") ||
+    !Number.isFinite(date.getTime()) ||
+    isoDate(date) !== week ||
+    date.getUTCDay() !== 0
+  ) {
+    throw new Error("--week must be the training week's Sunday in YYYY-MM-DD format.");
+  }
+  return week;
+}
+
+async function weeklyPlanParents() {
+  const hub = hubId();
+  if (!hub) return [];
+  const parents = [hub];
+  const kb = readCache().__knowledgeBase;
+  if (kb && normId(kb) !== normId(hub)) {
+    try {
+      if (await pageIsWithinHub(kb, hub)) parents.push(kb);
+    } catch (err) {
+      if (!/ -> 404:/.test(err.message)) throw err;
+    }
+  }
+  return parents;
+}
+
+/** Resolve one persistent plan page, retaining old dated pages as readable history. */
+async function getWeeklyPlanPageId(create = false) {
+  const cache = readCache();
+  const hub = hubId();
+  const parentIds = await weeklyPlanParents();
+  const pinned = cache.__workspacePages?.weeklyPlan ?? cache.__weeklyPlan;
+  if (pinned) {
+    try {
+      const page = await notion(`/pages/${pinned}`, "GET");
+      const title =
+        Object.values(page.properties ?? {}).find((property) => property.title)?.title ?? [];
+      const name = title.map((part) => part.plain_text ?? part.text?.content ?? "").join("");
+      if (
+        name === "Weekly Plan" &&
+        !page.archived &&
+        !page.in_trash &&
+        hub &&
+        (await pageIsWithinHub(page.parent?.page_id, hub))
+      ) {
+        return pinned;
+      }
+    } catch (err) {
+      if (!/ -> 404:/.test(err.message)) throw err;
+    }
+  }
+  let pageId;
+  for (const parent of parentIds) {
+    const pages = (await listChildren(parent)).filter(
+      (block) => block.type === "child_page" && block.child_page?.title === "Weekly Plan",
+    );
+    if (pages.length > 1)
+      throw new Error(
+        "Multiple Weekly Plan pages found; choose one in the workspace cache before saving.",
+      );
+    if (pages.length && (await pageIsWithinHub(pages[0].id, hub))) {
+      pageId = pages[0].id;
+      break;
+    }
+  }
+  if (!pageId && create) {
+    if (!hub)
+      throw new Error("The Notion Hub is not cached. Run resolve-workspace or /setup first.");
+    const page = await notion("/pages", "POST", {
+      parent: { page_id: hub },
+      icon: { type: "emoji", emoji: "📅" },
+      properties: { title: { title: [plain("Weekly Plan")] } },
+      children: markdownToBlocks(
+        `Your newest saved plan appears first below. Earlier plans remain available here.\n\n## ${WEEKLY_PLAN_HISTORY}`,
+      ),
+    });
+    pageId = page.id;
+  }
+  if (pageId) {
+    cache.__weeklyPlan = pageId;
+    cache.__workspacePages = { ...cache.__workspacePages, weeklyPlan: pageId };
+    writeCache(cache);
+  }
+  return pageId ?? null;
+}
+
+async function findLegacyWeeklyPlan(week) {
+  const hub = hubId();
+  for (const parent of await weeklyPlanParents()) {
+    const page = (await listChildren(parent)).find(
+      (block) => block.type === "child_page" && block.child_page?.title === `Weekly Plan - ${week}`,
+    );
+    if (page && (await pageIsWithinHub(page.id, hub))) return page.id;
+  }
+  return null;
+}
+
+/** Save an open, dated callout at the top; never replace or delete prior plans. */
+async function cmdWeeklyPlan(args) {
+  const action = args.action ?? "show";
+  if (action !== "save" && action !== "show")
+    throw new Error("Use weekly-plan --action show or --action save.");
+  const week = args.week == null && action === "show" ? null : validatePlanWeek(args.week);
+  const md =
+    action === "save"
+      ? args.file
+        ? fs.readFileSync(args.file, "utf8")
+        : String(args.md ?? "")
+      : "";
+  const blocks = action === "save" ? markdownToBlocks(md) : [];
+  if (action === "save" && !blocks.length)
+    throw new Error("The weekly plan cannot be empty. Pass --md or --file.");
+  const pageId = await getWeeklyPlanPageId(action === "save");
+  const children = pageId ? await listChildren(pageId) : [];
+  if (action === "show") {
+    const entry = children.find(
+      (block) => weeklyPlanEntryWeek(block) && (!week || weeklyPlanEntryWeek(block) === week),
+    );
+    if (entry) {
+      console.log(
+        `Weekly Plan page: ${pageId}\n## ${weeklyPlanText(entry)}\n${await blocksToMarkdown(entry.id)}`,
+      );
+      return;
+    }
+    const legacy = week ? await findLegacyWeeklyPlan(week) : null;
+    console.log(
+      legacy
+        ? `Legacy weekly plan: ${legacy}\n${await blocksToMarkdown(legacy)}`
+        : "No saved plan found for this week.",
+    );
+    return;
+  }
+  const anchor = children.find(
+    (block) => block.type === "heading_2" && weeklyPlanText(block) === WEEKLY_PLAN_HISTORY,
+  );
+  if (!anchor)
+    throw new Error(
+      'Weekly Plan is missing its "Plan history" heading. Run /setup before saving; existing content was kept.',
+    );
+  const savedAt = new Date().toISOString();
+  const result = await notion(`/blocks/${pageId}/children`, "PATCH", {
+    after: anchor.id,
+    children: [
+      {
+        object: "block",
+        type: "callout",
+        callout: {
+          rich_text: rt(`Weekly Plan - ${week} · Saving (incomplete) ${savedAt}`),
+          icon: { type: "emoji", emoji: "📅" },
+        },
+      },
+    ],
+  });
+  const entryId = result.results?.[0]?.id;
+  if (!entryId)
+    throw new Error("Notion did not return the plan entry ID; check the page before retrying.");
+  for (let i = 0; i < blocks.length; i += 100) {
+    await notion(`/blocks/${entryId}/children`, "PATCH", { children: blocks.slice(i, i + 100) });
+  }
+  await notion(`/blocks/${entryId}`, "PATCH", {
+    callout: { rich_text: rt(`Weekly Plan - ${week} · Saved ${savedAt}`) },
+  });
+  console.log(
+    `Saved Weekly Plan - ${week} at the top of Weekly Plan page ${pageId}. Earlier plans were kept.`,
+  );
+}
+
 async function findCurrentWeeklyPlanTitle(now) {
-  const kbId = readCache().__knowledgeBase;
-  if (!kbId) return null;
-  const expected = `Weekly Plan - ${isoDate(startOfWeekSundayUTC(now))}`;
-  const pages = await listChildren(kbId);
-  return pages.some((block) => block.type === "child_page" && block.child_page?.title === expected)
-    ? expected
-    : null;
+  const week = isoDate(startOfWeekSundayUTC(now));
+  const pageId = await getWeeklyPlanPageId();
+  if (pageId && (await listChildren(pageId)).some((block) => weeklyPlanEntryWeek(block) === week)) {
+    return `Weekly Plan - ${week}`;
+  }
+  return (await findLegacyWeeklyPlan(week)) ? `Weekly Plan - ${week}` : null;
 }
 
 /**
@@ -1132,7 +1349,6 @@ async function findCurrentWeeklyPlanTitle(now) {
  * Returns the number of blocks written.
  */
 async function replaceTileContent(columnId, md, forceColor) {
-  const oldIds = (await listChildren(columnId)).map((b) => b.id);
   const blocks = markdownToBlocks(md);
   // Lock the tile's header callout to its canonical color so it never drifts,
   // regardless of what color (if any) the source markdown specified.
@@ -1140,11 +1356,102 @@ async function replaceTileContent(columnId, md, forceColor) {
     const header = blocks.find((b) => b.type === "callout");
     if (header) header.callout.color = normalizeColor(forceColor);
   }
+  await replaceManagedBlocks(columnId, blocks);
+  return blocks.length;
+}
+
+async function replaceManagedBlocks(containerId, blocks) {
+  const oldIds = (await listChildren(containerId)).map((b) => b.id);
   for (let i = 0; i < blocks.length; i += 100) {
-    await notion(`/blocks/${columnId}/children`, "PATCH", { children: blocks.slice(i, i + 100) });
+    await notion(
+      `/blocks/${containerId}/children`,
+      "PATCH",
+      { children: blocks.slice(i, i + 100) },
+      { version: "2026-03-11" },
+    );
   }
   for (const id of oldIds) await notion(`/blocks/${id}`, "DELETE");
-  return blocks.length;
+}
+
+/** Both summaries are calculated once from the same day; graphs are uploaded only to Notion. */
+async function cmdSyncNutrition(args = {}, columns) {
+  const date =
+    args.now ??
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: process.env.TIMEZONE ?? "Etc/UTC",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  const mId = await resolveDbId("Meal Log");
+  const schema = (await notion(`/databases/${mId}`)).properties ?? {};
+  const dateProp = findProp(schema, (_n, d) => d.type === "date");
+  if (!dateProp)
+    throw new Error("Meal Log has no Date property; refusing an undated nutrition total.");
+  const kcalProp = findProp(schema, (n) => n.includes("calorie"));
+  const proteinProp = findProp(schema, (n) => n.includes("protein"));
+  const rows = await queryAllRows(mId, { filter: { property: dateProp, date: { equals: date } } });
+  const number = (prop) =>
+    prop?.type === "number" && Number.isFinite(prop.number) ? prop.number : Number.NaN;
+  const meals = rows.map((pg) => ({
+    kcal: number(pg.properties?.[kcalProp]),
+    protein: number(pg.properties?.[proteinProp]),
+  }));
+  const targets = readPersonalTargets();
+  const { summarizeNutrition, uploadNutritionImage, nutritionBlocks } = await import(
+    "./notion-nutrition.mjs"
+  );
+  const summary = summarizeNutrition(date, meals, targets);
+  const cols = columns ?? (await resolveDashboard()).columns ?? {};
+  const cache = readCache();
+  const mealPage = cache.__workspacePages?.meals ?? cache.__mealLogPage;
+  let summaryBlock;
+  if (mealPage && (await pageIsWithinHub(mealPage, hubId()))) {
+    summaryBlock = (await listChildren(mealPage)).find(
+      (b) =>
+        b.type === "callout" &&
+        (b.callout.rich_text ?? []).map((t) => t.plain_text ?? t.text?.content ?? "").join("") ===
+          "Daily nutrition",
+    );
+  }
+  let uploadId;
+  try {
+    uploadId = await uploadNutritionImage(notion, summary);
+  } catch (error) {
+    console.error(`Nutrition image unavailable; showing recorded totals as text: ${error.message}`);
+  }
+  const brief = uploadId
+    ? nutritionBlocks(summary, uploadId)
+    : markdownToBlocks(`**${date}**\n${renderNutritionTile(meals, targets)}`);
+  if (cols.nutrition) {
+    await replaceManagedBlocks(cols.nutrition, [
+      {
+        type: "callout",
+        callout: {
+          rich_text: [
+            { type: "text", text: { content: "Daily nutrition" }, annotations: { bold: true } },
+          ],
+          icon: { type: "emoji", emoji: "🍽️" },
+          color: TILE_COLORS.nutrition,
+        },
+      },
+      ...brief,
+    ]);
+  }
+  if (summaryBlock) {
+    await replaceManagedBlocks(
+      summaryBlock.id,
+      uploadId
+        ? nutritionBlocks(summary, uploadId, {
+            detailed: true,
+            dailyPageId: rows.length === 1 ? rows[0].id : undefined,
+          })
+        : brief,
+    );
+  }
+  console.log(
+    `Synced daily nutrition for ${date}${summaryBlock ? " on Dashboard and Meal Log" : " on Dashboard; run compact workspace setup to add the Meal Log summary"}.`,
+  );
 }
 
 // ─── commands ────────────────────────────────────────────────────────────────
@@ -1587,6 +1894,7 @@ async function cmdSyncDashboard(args) {
   }
   const now = args.now ? new Date(args.now) : new Date();
   if (Number.isNaN(now.getTime())) throw new Error(`--now must be an ISO date, got "${args.now}"`);
+  const failures = [];
 
   // Keep the primary card grounded in the current week's saved plan and the
   // latest actual session. On a read failure, replace it with an honest error
@@ -1678,28 +1986,17 @@ async function cmdSyncDashboard(args) {
   // so a failure here degrades to skipping the tile (with a printed warning).
   if (cols.nutrition) {
     try {
-      const mId = await resolveDbId("Meal Log");
-      const schema = (await notion(`/databases/${mId}`)).properties ?? {};
-      const dateProp = findProp(schema, (_n, d) => d.type === "date");
-      const kcalProp = findProp(schema, (n) => n.includes("calorie"));
-      const proteinProp = findProp(schema, (n) => n.includes("protein"));
-      const body = {};
-      if (dateProp) body.filter = { property: dateProp, date: { equals: isoDate(now) } };
-      const rows = await queryAllRows(mId, body);
-      const meals = rows.map((pg) => ({
-        kcal: kcalProp ? Number(readProp(pg.properties?.[kcalProp])) : Number.NaN,
-        protein: proteinProp ? Number(readProp(pg.properties?.[proteinProp])) : Number.NaN,
-      }));
-      await replaceTileContent(
-        cols.nutrition,
-        renderNutritionTile(meals, readPersonalTargets()),
-        TILE_COLORS.nutrition,
-      );
+      await cmdSyncNutrition(args, cols);
     } catch (err) {
       console.error(`Nutrition tile skipped (${err.message}). Has the Meal Log been set up?`);
+      failures.push("daily nutrition");
     }
   }
 
+  if (failures.length)
+    throw new Error(
+      `Dashboard refresh incomplete: ${failures.join(", ")}. Previous dated summaries may remain.`,
+    );
   console.log(
     "Synced Dashboard tiles (Next Session, This Week, Goals, Body Stats, Nutrition) from Notion.",
   );
@@ -1711,6 +2008,15 @@ async function cmdSyncDashboard(args) {
  * Prints the new page id.
  */
 async function cmdCreatePage(args) {
+  const weeklyPlan = /^Weekly Plan - (\d{4}-\d{2}-\d{2})$/.exec(args.title ?? "");
+  if (weeklyPlan) {
+    return cmdWeeklyPlan({
+      ...args,
+      action: "save",
+      week: weeklyPlan[1],
+      file: args.file ?? args["body-file"],
+    });
+  }
   // --parent-name resolves a cached page key (e.g. __knowledgeBase) so callers
   // never need shell id-capture ($(), grep) to find the parent: that pattern
   // fails on Windows cmd.exe. Prefer it over --parent whenever the parent is
@@ -1814,11 +2120,13 @@ const COMMANDS = {
   append: cmdAppend,
   "refresh-tile": cmdRefreshTile,
   "sync-dashboard": cmdSyncDashboard,
+  "sync-nutrition": cmdSyncNutrition,
   "sum-day": cmdSumDay,
   "create-page": cmdCreatePage,
   lookup: cmdLookup,
   "exercise-inventory": cmdExerciseInventory,
   "exercise-library": cmdExerciseLibrary,
+  "weekly-plan": cmdWeeklyPlan,
 };
 
 async function main() {
@@ -1870,4 +2178,11 @@ export {
   renderBodyStatsTile,
   parseTargetsFromMarkdown,
   renderNutritionTile,
+  cmdWeeklyPlan,
+  cmdCreatePage,
+  findCurrentWeeklyPlanTitle,
+  weeklyPlanEntryWeek,
+  cmdSyncNutrition,
+  pageIsWithinHub,
+  workspaceDatabases,
 };

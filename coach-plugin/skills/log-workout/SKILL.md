@@ -16,7 +16,9 @@ row holds that day's independent sessions, sets, volume, and duration.
   names for future entries and plans so progression stays on the same movement.
 - A rapid-fire sets ledger on `done` is authoritative. Use those sets instead
   of re-reading earlier messages that may contain corrected values.
-- If the exact `Weekly Plan - <Sunday YYYY-MM-DD>` page exists, read it. Add a
+- Read the current week's newest saved plan with
+  `node scripts/notion.mjs weekly-plan --action show --week <Sunday YYYY-MM-DD>`.
+  This reads the persistent Weekly Plan history or an older dated plan page. Add a
   plan-versus-actual note only for the same exercise variation with numeric
   sets, reps, and load. Never infer that an unmentioned exercise was skipped.
 - Record only real sessions. Use the local date in the Telegram message
