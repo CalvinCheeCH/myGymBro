@@ -1,0 +1,4 @@
+# Keep local private files out of Cloud Build source uploads.
+.gcloudignore
+.git
+#!include:.gitignore

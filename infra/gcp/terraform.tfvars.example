@@ -1,0 +1,40 @@
+# Copy to terraform.tfvars and fill in. Do not commit terraform.tfvars.
+# Secret values passed here are also recoverable from Terraform state. Configure
+# an encrypted, access-restricted remote backend before any production apply;
+# see README.md. `sensitive = true` masks terminal output only.
+
+project_id = "your-gcp-project"
+region     = "europe-west1"
+
+allowed_telegram_ids = "YOUR_TELEGRAM_ID"
+owner_chat_id        = "YOUR_TELEGRAM_ID"
+timezone             = "Etc/UTC" # Set your own IANA timezone.
+agent_name           = "Coach"
+
+# Optional Notion. Leave notion_token empty to run without persistence.
+notion_token          = ""
+notion_parent_page_id = ""
+
+# Runtime secrets are written to Secret Manager by Terraform and are also stored
+# in Terraform state. Never use real values with production local state.
+claude_oauth_token = "PASTE_FROM_claude_setup-token"
+telegram_bot_token = "PASTE_FROM_BotFather"
+cron_secret        = "GENERATE_A_LONG_RANDOM_VALUE"
+
+# personalities_enabled defaults to false; set true to enable persona overlays.
+# personalities_enabled = true
+# owner_persona         = "arnold"
+
+# Optional model override.
+# claude_model = "claude-sonnet-5"
+
+# Voice notes default to off on scale-to-zero. Set transcribe_provider = "api"
+# and provide a key to enable transcription (local Whisper would need more memory).
+# Leave transcribe_api_key empty to disable voice notes.
+# transcribe_api_key = "sk-..."
+
+# Optional Google Calendar sync (see docs/google-calendar-architecture.md).
+# Run `node --env-file=.env scripts/google-auth.mjs` locally first to get the refresh token.
+# google_client_id     = "1234-abc.apps.googleusercontent.com"
+# google_client_secret = "GOCSPX-..."
+# google_refresh_token = "1//..."

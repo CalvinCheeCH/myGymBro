@@ -1,0 +1,100 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+.claude/
+.codex/
+.agents/
+
+# Personal customisation (your own goals, stats, dietary prefs). Keep this private.
+PERSONAL.md
+PERSONAL.md.*
+!PERSONAL.md.example
+
+# Personal logging shorthand (how the owner types exercises/meals). Keep private.
+LOGGING_STYLE.md
+LOGGING_STYLE.md.*
+
+# Custom coach voices made with /create. Keep private.
+PERSONAS.md
+PERSONAS.md.*
+
+# User-dumped training programs / knowledge. Ingested into Notion, never committed.
+knowledge/*
+!knowledge/README.md
+!knowledge/.gitkeep
+
+# Your Notion Hub page pin (points at your private workspace). Copy from the .example.
+config/notion-hub.json
+config/notion-hub.json.*
+!config/notion-hub.json.example
+
+# Internal planning scratch notes, never shipped
+PRD.md
+CODE_REVIEW.md
+docs/*-plan.md
+docs/ideas/
+docs/GLOBAL_EXPANSION_FEEDBACK.md
+docs/PROJECT_TRACKER.md
+docs/comparison-opengym.md
+docs/stress-test-checklist.md
+docs/product-presentation.md
+evals/reports/
+showcase/assets/personas/generation.json
+PONYTAIL_CLEANUP_REPORT.md
+
+# Runtime data: persisted sessions and scheduled tasks
+data/
+*-sessions.json
+*-schedule.json
+sessions.json
+schedule.json
+personas.json
+agent-runs.jsonl
+gemini-history.json
+gemini-last-good.json
+gemini-quotas.json
+notion-ids.json
+rapid-ledger.json
+
+# Eval run transcripts
+evals/results/
+
+# Local OAuth credentials and generated personal exports. Public demo assets stay included.
+**/credentials.json
+**/client_secret*.json
+**/google-token.json
+**/token.json
+**/tokens.json
+*.pem
+*.key
+*.p12
+*.pfx
+backups/
+screenshots/
+recordings/
+*.zip
+*.tar
+*.tgz
+*.gz
+
+# Local caches written by skills/scripts at runtime
+**/.cache/
+
+# Terraform state and secret var files
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+.terraformrc
+credentials.tfrc.json
+crash.log
+
+# Azure deployment parameters (hold secrets)
+infra/azure/main.parameters.json
+infra/azure/*.parameters.json
+__pycache__/

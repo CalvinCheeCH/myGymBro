@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="620" viewBox="0 0 760 620" role="img" aria-labelledby="overview-title overview-desc" font-family="Arial, Helvetica, sans-serif">
+  <title id="overview-title">myGymBro: your fitness, in one conversation</title>
+  <desc id="overview-desc">Send text and meal photos through Telegram, with voice notes optional. myGymBro logs workouts and meals, offers plans and guidance, and creates report cards. The coach reads and updates your personal Notion workspace for history, goals and progress. Run your own copy on your laptop or in your own cloud account, using Claude, Gemini, or OpenAI.</desc>
+
+  <rect width="760" height="620" rx="28" fill="#f5f5ef"/>
+  <text x="32" y="66" font-size="36" font-weight="700" letter-spacing="-1.1" fill="#173e31">Your fitness. One conversation.</text>
+  <text x="32" y="106" font-size="21" fill="#52685c">Coaching grounded in your logs, goals and progress.</text>
+  <path d="M32 137H728" stroke="#d7dfd2" stroke-width="1"/>
+
+  <!-- Three stages: conversation, coaching, and personal history. -->
+  <rect x="32" y="170" width="210" height="330" rx="22" fill="#ffffff" stroke="#e0e6db"/>
+  <rect x="276" y="170" width="208" height="330" rx="22" fill="#173e31"/>
+  <rect x="518" y="170" width="210" height="330" rx="22" fill="#ffffff" stroke="#e0e6db"/>
+
+  <g text-anchor="middle" font-size="15" font-weight="700" letter-spacing="2">
+    <text x="137" y="209" fill="#61735f">01 / CHAT</text>
+    <text x="380" y="209" fill="#c5dc90">02 / COACH</text>
+    <text x="623" y="209" fill="#61735f">03 / TRACK</text>
+  </g>
+
+  <!-- Original line illustrations; no external assets or icon fonts. -->
+  <circle cx="137" cy="266" r="37" fill="#eef3e4"/>
+  <g fill="none" stroke="#315640" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M117 248h40a8 8 0 0 1 8 8v15a8 8 0 0 1-8 8h-25l-13 9v-9h-2a8 8 0 0 1-8-8v-15a8 8 0 0 1 8-8Z"/>
+    <path d="M122 260h30m-30 10h19"/>
+  </g>
+
+  <circle cx="380" cy="266" r="37" fill="#28513e"/>
+  <g fill="none" stroke="#d4e7a2" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M352 260v12m7-21v30m8-26v22m26-22v22m8-26v30m7-21v12M367 266h26"/>
+  </g>
+
+  <circle cx="623" cy="266" r="37" fill="#eef3e4"/>
+  <g fill="none" stroke="#315640" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="601" y="242" width="44" height="48" rx="5"/>
+    <path d="M611 239v7m24-7v7M612 256h22M612 278l7-9 7 4 8-11"/>
+  </g>
+
+  <g text-anchor="middle" font-size="27" font-weight="700" letter-spacing="-.5">
+    <text x="137" y="333" fill="#173e31">Telegram</text>
+    <text x="380" y="333" fill="#ffffff">myGymBro</text>
+    <text x="623" y="333" fill="#173e31">Your Notion</text>
+  </g>
+
+  <!-- Replies return to Telegram; Notion is read as well as updated. -->
+  <g fill="none" stroke="#74906b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M249 325h20m-16-4-4 4 4 4m12-8 4 4-4 4"/>
+    <path d="M491 325h20m-16-4-4 4 4 4m12-8 4 4-4 4"/>
+  </g>
+
+  <path d="M64 354h146M550 354h146" stroke="#e0e6db"/>
+  <path d="M308 354h144" stroke="#3c6149"/>
+  <g text-anchor="middle" font-size="20" fill="#52685c">
+    <text x="137" y="396">Text + meal photos</text>
+    <text x="137" y="430">Optional voice</text>
+    <text x="623" y="396">History + goals</text>
+    <text x="623" y="430">Progress dashboard</text>
+  </g>
+  <g text-anchor="middle" font-size="20" fill="#eef4e5">
+    <text x="380" y="396">Workouts + meals</text>
+    <text x="380" y="430">Plans + guidance</text>
+    <text x="380" y="464">Report cards</text>
+  </g>
+
+  <!-- A deployment cue, not a promise of managed hosting. -->
+  <g fill="none" stroke="#315640" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="34" y="544" width="28" height="19" rx="2"/>
+    <path d="M30 568h36m-16-5v5"/>
+  </g>
+  <text x="82" y="551" font-size="20" font-weight="700" fill="#173e31">Your laptop or your cloud account</text>
+  <text x="82" y="582" font-size="18" fill="#52685c">Self-hosted. Powered by Claude, Gemini, or OpenAI.</text>
+</svg>

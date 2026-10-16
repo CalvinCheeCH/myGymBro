@@ -1,0 +1,12 @@
+#!/bin/sh
+# shortcut: audit only the current branch; add per-ref scans before publishing tags or multiple branches.
+branch=$(git symbolic-ref --quiet HEAD) || exit 1
+head=$(git rev-parse HEAD) || exit 1
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$local_sha" in 0000000000000000000000000000000000000000) continue ;; esac
+  if [ "$local_ref" != "$branch" ] || [ "$local_sha" != "$head" ]; then
+    echo "Publication blocked: push only the current audited branch; never mirror private refs." >&2
+    exit 1
+  fi
+done
+exec node scripts/check-publication.mjs

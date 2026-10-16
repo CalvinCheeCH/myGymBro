@@ -1,0 +1,69 @@
+# ── Build stage ────────────────────────────────────────────────────────
+# Debian 13 (trixie) base: glibc (needed for onnxruntime and the SDK's native
+# binary) and a shell (the agent runs bash/git), with a much smaller CVE surface
+# than the bookworm-based slim images.
+FROM node:24-trixie-slim AS build
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+RUN npm ci
+
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN npx tsc
+
+# Prune dev dependencies for the runtime image
+RUN npm prune --production
+
+# Strip the musl variant of the SDK's native binary. node:22-slim is Debian glibc,
+# but npm installs both linux-x64 and linux-x64-musl optional deps, and the SDK's
+# runtime discovery tries musl FIRST. Leaving the musl dir present causes the SDK
+# to spawn a musl binary on glibc, which fails with ENOENT from the dynamic linker.
+RUN rm -rf node_modules/@anthropic-ai/claude-agent-sdk-linux-x64-musl
+
+# ── Runtime stage ─────────────────────────────────────────────────────
+FROM node:24-trixie-slim
+WORKDIR /app
+
+# git and ca-certificates are needed by the SDK and for any npx fetches.
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends ca-certificates git && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Copy built application (no dev deps, no source)
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/package.json ./
+
+# Copy project files. CLAUDE.md and the plugin are made read-only so the agent
+# cannot rewrite its own persona or skills at runtime.
+COPY CLAUDE.md ./
+COPY coach-plugin/ ./coach-plugin/
+RUN chmod 444 CLAUDE.md && chmod -R 555 coach-plugin/
+
+# Bundled CLIs the agent runs via Bash (Notion helper, workspace builder, exercise
+# lookup) and the docs some skills reference. Read-only at runtime; their caches
+# write to /data, not here.
+COPY scripts/ ./scripts/
+COPY docs/ ./docs/
+RUN chmod -R 555 scripts/ docs/
+
+COPY entrypoint.sh ./
+RUN chmod +x entrypoint.sh
+
+# PERSONAL.md is private, so it is deliberately excluded from the image
+# (.gitignore + .dockerignore). Link the project-root path to the durable volume
+# so a copy uploaded to /data/PERSONAL.md is picked up at runtime. The link dangles
+# harmlessly (agent treats PERSONAL.md as missing) when the volume has no copy.
+RUN ln -sf /data/PERSONAL.md /app/PERSONAL.md
+
+# /data is the mountpoint for the persistent volume (sessions + schedule).
+RUN chown -R node:node /app/dist /app/node_modules /app/package.json /app/entrypoint.sh && \
+    mkdir -p /home/node/.claude && chown -R node:node /home/node && \
+    mkdir -p /data && chown node:node /data
+
+USER node
+
+EXPOSE 8080
+
+ENTRYPOINT ["./entrypoint.sh"]

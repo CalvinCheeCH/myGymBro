@@ -1,0 +1,42 @@
+{
+  "name": "mygymbro",
+  "version": "3.6.1",
+  "description": "myGymBro: a personal fitness and nutrition coach on Telegram, forked from Oak. Runs on Claude, Google Gemini, or OpenAI, backed by Notion.",
+  "type": "module",
+  "main": "dist/index.js",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:showcase": "node scripts/build-showcase.mjs",
+    "dev:showcase": "node showcase/server.mjs",
+    "start": "node --env-file-if-exists=.env dist/index.js",
+    "dev": "tsx --env-file=.env src/index.ts",
+    "lint": "biome check .",
+    "check:publication": "node scripts/check-publication.mjs",
+    "format": "biome format --write .",
+    "pretest": "tsc",
+    "test": "node --experimental-test-module-mocks --test scripts/*.test.mjs tests/*.test.mjs"
+  },
+  "overrides": {
+    "adm-zip": "^0.6.1"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.177",
+    "@google/genai": "^2.18.0",
+    "@huggingface/transformers": "^4.3.1",
+    "croner": "^10.0.1",
+    "ffmpeg-static": "^5.3.0",
+    "grammy": "^1.30.0",
+    "sharp": "^0.35.5",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

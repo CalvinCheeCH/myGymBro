@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "One synthetic JWT in the redaction regression test; not a usable credential."
+condition = "AND"
+targetRules = ["jwt"]
+paths = ['''(^|/)tests/redact\.test\.mjs$''']
+regexTarget = "secret"
+regexes = ['''^eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.abcDEF123456$''']
