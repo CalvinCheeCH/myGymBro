@@ -41,17 +41,25 @@ docker build -t fitcoach-agent .
 docker run -d --name fitcoach --env-file .env -v fitcoach-data:/data -p 127.0.0.1:8080:8080 fitcoach-agent
 ```
 
-The container routes all runtime state onto `/data` by default: sessions, the
-schedule, persona files, provider history, pending workout sets, run metrics, the
-Google token file, and Claude's own transcripts (via `HOME=/data`). The
-entrypoint defaults those paths to `/data` unless you set the corresponding
-environment variables yourself. Mount the volume so those files survive restarts.
+The container routes its durable local records onto `/data` by default: sessions,
+the schedule, persona files, provider history, pending workout sets, run metrics,
+the Google token and selected calendar, and Claude's own transcripts (via
+`HOME=/data`). The entrypoint defaults those paths to `/data` unless you set
+the corresponding environment variables yourself. Mount the volume so those files survive restarts.
 Edit your profile there directly (`/data/PERSONAL.md`, `/data/LOGGING_STYLE.md`,
 `/data/PERSONAS.md`); the image links the project-root paths to the mount.
 Regenerable caches, report images, and knowledge staging still live in `/app/data`
 and `/app/knowledge`, which are writable in the image but do not survive container
 replacement (Notion remains the durable record store). `/healthz` on port 8080
 reports process health; it does not verify those files or live integrations.
+
+When upgrading an older container, remove relative storage overrides such as
+`SESSION_FILE=./data/sessions.json`, or set them to `/data/...`; explicit values
+otherwise bypass the volume defaults. Before replacing it, migrate existing local
+records to their corresponding paths in the mounted volume. In particular, copy
+`/app/data/google-calendar.json` to `/data/google-calendar.json` if the volume has
+no saved selection yet; preserve an existing destination instead of overwriting it.
+`GOOGLE_CALENDAR_ID`, when set, overrides that saved selection.
 
 > Only one instance may poll a given bot token at a time. If you also run it
 > locally while a deployed copy is up, Telegram returns a 409 conflict. Stop one,

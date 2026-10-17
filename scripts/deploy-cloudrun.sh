@@ -35,9 +35,7 @@ gcloud run deploy "${SERVICE}" \
   --no-cpu-throttling \
   --add-volume "name=data,type=cloud-storage,bucket=${BUCKET}" \
   --add-volume-mount "volume=data,mount-path=/data" \
-  --set-env-vars "MODE=polling,HOME=/data,TIMEZONE=${TIMEZONE},AGENT_NAME=Coach,TRANSCRIBE_PROVIDER=off" \
-  --set-env-vars "SESSION_FILE=/data/sessions.json,SCHEDULE_FILE=/data/schedule.json" \
-  --set-env-vars "ALLOWED_TELEGRAM_IDS=${ALLOWED_IDS},OWNER_CHAT_ID=${OWNER_CHAT_ID}" \
+  --set-env-vars "MODE=polling,HOME=/data,TIMEZONE=${TIMEZONE},AGENT_NAME=Coach,TRANSCRIBE_PROVIDER=off,SESSION_FILE=/data/sessions.json,SCHEDULE_FILE=/data/schedule.json,ALLOWED_TELEGRAM_IDS=${ALLOWED_IDS},OWNER_CHAT_ID=${OWNER_CHAT_ID}" \
   --set-secrets "CLAUDE_CODE_OAUTH_TOKEN=claude-oauth:latest,TELEGRAM_BOT_TOKEN=telegram-token:latest,NOTION_TOKEN=notion-token:latest,CRON_SECRET=cron-secret:latest"
 
 URL="$(gcloud run services describe "${SERVICE}" --region "${REGION}" --format 'value(status.url)')"
@@ -45,7 +43,7 @@ echo "Service URL: ${URL}"
 
 echo "Switching to webhook mode so the Telegram webhook registers..."
 gcloud run services update "${SERVICE}" --region "${REGION}" \
-  --set-env-vars "MODE=webhook,PUBLIC_BASE_URL=${URL}"
+  --update-env-vars "MODE=webhook,PUBLIC_BASE_URL=${URL}"
 
 # Cloud Scheduler needs the cron secret to call /cron/run. Read it back from Secret
 # Manager so it is not duplicated here.

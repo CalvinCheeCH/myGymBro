@@ -4,10 +4,8 @@ import { isAllowed } from "../channel/permissions.js";
 import { type ScheduledTask, addTask, listTasks, removeTask } from "./scheduler.js";
 
 /**
- * Localhost-only control plane for reminders. The agent (running as a child process
- * on the same host) can curl these endpoints to manage scheduled tasks live, so
- * "remind me to train at 6pm on weekdays" takes effect immediately rather than on
- * the next restart. Bound to 127.0.0.1 only, so it is not reachable off-box.
+ * Localhost-only reminder control plane for operator tools. The coach's model-visible
+ * tools do not expose these endpoints. Bound to 127.0.0.1 only.
  */
 
 const PORT = 9130;

@@ -56,7 +56,8 @@ coach plan around your real commitments.
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | OAuth "Desktop app" client credentials from Google Cloud Console (enable the Calendar API and add yourself as a consent-screen test user first). Blank disables calendar sync; the bot still runs. |
 | `GOOGLE_REFRESH_TOKEN` | Optional. For deployments without the token file: the `refresh_token` value from `data/google-token.json`, stored as a secret. |
 | `GOOGLE_CALENDAR_ID` | Optional. Which calendar to write to. Defaults to the calendar chosen with `calendar.mjs use-calendar`, then `primary`. |
-| `GOOGLE_TOKEN_FILE` | Optional. Path of the token store, default `./data/google-token.json` (point it at a mounted volume on scale-to-zero hosts). |
+| `GOOGLE_TOKEN_FILE` | Optional. Path of the token store, default `./data/google-token.json`; the container defaults to `/data/google-token.json`. |
+| `GOOGLE_CALENDAR_FILE` | Optional. Saves the calendar chosen with `use-calendar`. Defaults to `./data/google-calendar.json` locally and `/data/google-calendar.json` in the container. `GOOGLE_CALENDAR_ID` takes precedence. |
 
 After setting the client id and secret, authorise once with
 `node --env-file=.env scripts/google-auth.mjs`. See
@@ -87,12 +88,13 @@ After setting the client id and secret, authorise once with
 | `CUSTOM_PERSONAS_FILE` | `./PERSONAS.md` | Custom voices made with `/create` (gitignored). |
 | `SESSION_TTL_HOURS` | `12` | How long a conversation stays warm before a fresh session starts. |
 
-In the container the entrypoint defaults these (plus `CUSTOM_PERSONAS_FILE`,
+In the container the entrypoint defaults these file paths (plus
 `RAPID_LEDGER_FILE`, `RUN_LOG_FILE`, `GEMINI_HISTORY_FILE`,
-`OPENAI_HISTORY_FILE`, and `GOOGLE_TOKEN_FILE`) to `/data`, so every state file
-survives container replacement when the volume is mounted. Relative `./data/`
-defaults refer to the application's directory in local installs. See the
-[storage requirements](./deployment.md#always-on-polling-mode-the-default).
+`GOOGLE_TOKEN_FILE`, and `GOOGLE_CALENDAR_FILE`) to `/data`. Mount that volume
+to retain these files across container replacement. Explicit environment values
+override these defaults: replace older relative storage paths with `/data/...`
+when deploying. Caches, report images, and knowledge staging remain outside the
+volume. See the [storage and migration requirements](./deployment.md#always-on-polling-mode-the-default).
 
 ## Transport mode
 
@@ -124,8 +126,8 @@ See [deployment.md](./deployment.md) for how the two modes map to hosts.
 
 ## Reminders
 
-Two reminders are seeded by default: a morning session nudge (11:00) and the
-Sunday weekly plan (18:00), in `TIMEZONE`. Ask the coach in chat to add, change,
-or remove reminders ("remind me to train at 6pm on weekdays") and it manages them
-live in polling mode. In webhook mode the agent records the request but an
-external scheduler must run the job (see [deployment.md](./deployment.md)).
+With `OWNER_CHAT_ID` set, two reminders are seeded by default: a morning session
+nudge (11:00) and the Sunday weekly plan (18:00), in `TIMEZONE`. The coach cannot
+add, change, or remove reminder jobs through chat. To customise them, stop the bot,
+edit the tasks in `SCHEDULE_FILE`, and restart. In webhook mode, also configure
+the external scheduler to trigger each task (see [deployment.md](./deployment.md)).

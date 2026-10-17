@@ -42,8 +42,8 @@ const SCHEDULE_FILE = config.scheduleFile;
 
 /**
  * Default reminders seeded the first time the agent runs with no schedule file.
- * The user can edit, disable, or remove these by asking the agent in chat. Times
- * are interpreted in the configured timezone.
+ * Operators can edit, disable, or remove these in the schedule file while the bot
+ * is stopped. Times are interpreted in the configured timezone.
  */
 function defaultTasks(): ScheduledTask[] {
   if (!config.ownerChatId) return [];

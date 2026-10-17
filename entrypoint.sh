@@ -13,6 +13,7 @@ export RUN_LOG_FILE="${RUN_LOG_FILE:-/data/agent-runs.jsonl}"
 export GEMINI_HISTORY_FILE="${GEMINI_HISTORY_FILE:-/data/gemini-history.json}"
 export OPENAI_HISTORY_FILE="${OPENAI_HISTORY_FILE:-/data/openai-history.json}"
 export GOOGLE_TOKEN_FILE="${GOOGLE_TOKEN_FILE:-/data/google-token.json}"
+export GOOGLE_CALENDAR_FILE="${GOOGLE_CALENDAR_FILE:-/data/google-calendar.json}"
 
 mkdir -p /data /data/.claude
 

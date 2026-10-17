@@ -26,6 +26,7 @@ export const config = {
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
   googleRefreshToken: process.env.GOOGLE_REFRESH_TOKEN ?? "",
   googleTokenFile: process.env.GOOGLE_TOKEN_FILE ?? "./data/google-token.json",
+  googleCalendarFile: process.env.GOOGLE_CALENDAR_FILE ?? "./data/google-calendar.json",
   googleCalendarId: process.env.GOOGLE_CALENDAR_ID ?? "",
 
   // Claude subscription auth. The agent always runs on the subscription token

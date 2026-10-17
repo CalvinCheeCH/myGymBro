@@ -5,7 +5,7 @@ import { config } from "../config.js";
 const API = "https://www.googleapis.com/calendar/v3";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const TOKEN_FILE = path.resolve(process.cwd(), config.googleTokenFile);
-const CALENDAR_FILE = path.resolve(process.cwd(), "data", "google-calendar.json");
+const CALENDAR_FILE = path.resolve(process.cwd(), config.googleCalendarFile);
 
 type TokenCache = { refresh_token?: string };
 type CalendarEvent = {

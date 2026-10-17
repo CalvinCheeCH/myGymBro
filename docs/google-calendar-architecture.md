@@ -54,10 +54,16 @@ runs fine and the session context tells the model calendar sync is off.
 First match wins:
 
 1. `GOOGLE_CALENDAR_ID` env var,
-2. the id cached in `data/google-calendar.json` by
-   `calendar.mjs use-calendar --name "Training" [--create]` (find-or-create by
-   name, mirrors the Notion resolve-by-name pattern),
+2. the id saved by `calendar.mjs use-calendar --name "Training" [--create]`
+   (find-or-create by name, mirrors the Notion resolve-by-name pattern) in
+   `GOOGLE_CALENDAR_FILE`, defaulting to `data/google-calendar.json` locally or
+   `/data/google-calendar.json` in the container,
 3. `primary`.
+
+Mount `/data` so the saved choice survives container replacement. Existing
+containers may have the choice at `/app/data/google-calendar.json`; migrate it
+before replacing the container, preserving any selection already on the volume.
+See the [storage requirements](./deployment.md#always-on-polling-mode-the-default).
 
 ## The helper: scripts/calendar.mjs
 

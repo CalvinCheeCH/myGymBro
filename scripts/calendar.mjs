@@ -22,7 +22,7 @@ import { randomBytes } from "node:crypto";
  * they are within a minute of expiry, with one forced refresh retry on a 401.
  *
  * Calendar selection (first match wins): GOOGLE_CALENDAR_ID env, then the id
- * cached by `use-calendar` in data/google-calendar.json, then "primary".
+ * cached by `use-calendar` in GOOGLE_CALENDAR_FILE (default data/google-calendar.json), then "primary".
  *
  * Usage:
  *   node scripts/calendar.mjs status
@@ -53,7 +53,10 @@ const TOKEN_FILE = path.resolve(
   process.cwd(),
   process.env.GOOGLE_TOKEN_FILE ?? path.join("data", "google-token.json"),
 );
-const CALENDAR_FILE = path.resolve(process.cwd(), "data", "google-calendar.json");
+const CALENDAR_FILE = path.resolve(
+  process.cwd(),
+  process.env.GOOGLE_CALENDAR_FILE ?? path.join("data", "google-calendar.json"),
+);
 
 const MAX_RETRIES = 5;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -442,7 +445,7 @@ async function cmdListCalendars() {
 /**
  * Point the helper at a calendar by name, creating it when --create is passed
  * and no calendar with that name exists. The chosen id is cached in
- * data/google-calendar.json (same trust tier as notion-ids.json) so every
+ * GOOGLE_CALENDAR_FILE (default data/google-calendar.json) so every
  * later command targets it without the user setting GOOGLE_CALENDAR_ID.
  */
 async function cmdUseCalendar(args) {
@@ -461,7 +464,7 @@ async function cmdUseCalendar(args) {
   const tmp = `${CALENDAR_FILE}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify({ calendarId: cal.id, name }, null, 2));
   fs.renameSync(tmp, CALENDAR_FILE);
-  console.log(`Using calendar "${name}" (${cal.id}). Cached to data/google-calendar.json.`);
+  console.log(`Using calendar "${name}" (${cal.id}). Cached to ${CALENDAR_FILE}.`);
 }
 
 const COMMANDS = {
