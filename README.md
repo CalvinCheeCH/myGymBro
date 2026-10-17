@@ -292,6 +292,29 @@ notes and Google Calendar later, after text and photo coaching work.
 
 Follow these steps once. You do not need to clone, pull, push, or upload anything to GitHub.
 
+### TL;DR: get your coach running
+
+1. Install [Node.js 22 or newer](https://nodejs.org/en/download), then download and
+   extract this repository using **Code → Download ZIP**.
+2. Create a Telegram bot with [@BotFather](https://t.me/BotFather) using `/newbot`,
+   and get your numeric Telegram ID from [@userinfobot](https://t.me/userinfobot).
+3. Get an API key from Gemini or OpenAI, or set up the Claude subscription token below.
+4. In the project folder, copy `.env.example` to `.env`. Add the bot token, your ID
+   to both `ALLOWED_TELEGRAM_IDS` and `OWNER_CHAT_ID`, and your chosen AI credential.
+   Keep `.env` private. Read the [Gemini free-tier privacy warning](#gemini-free-tier-privacy-warning)
+   before sending personal records.
+5. Open a terminal in that folder and run:
+
+   ```bash
+   npm install
+   npm run dev
+   ```
+
+6. Message your bot with `/start`. To save workouts and meals, [connect Notion](#connect-notion-when-you-are-ready-to-save-logs),
+   set `NOTION_TOKEN` and `NOTION_PARENT_PAGE_ID` in `.env`, restart the bot, and send `/setup`.
+
+That is the short version. See below for provider-specific credentials and troubleshooting.
+
 1. **Download the project and install Node.js.** On this repository's GitHub page, choose
    **Code → Download ZIP**, then extract the ZIP. Install the **LTS version of
    [Node.js](https://nodejs.org/en/download)** using the installer for your computer
