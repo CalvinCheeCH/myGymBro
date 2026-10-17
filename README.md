@@ -1,5 +1,9 @@
 # myGymBro: Your fitness coach in Telegram
 
+**[Try the interactive showcase →](https://calvincheech.github.io/myGymBro/)**
+
+Explore sample chats, a Notion-style dashboard, and coaching voices. No setup needed.
+
 [![CI](https://github.com/CalvinCheeCH/myGymBro/actions/workflows/ci.yml/badge.svg)](https://github.com/CalvinCheeCH/myGymBro/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen.svg)](https://nodejs.org)
