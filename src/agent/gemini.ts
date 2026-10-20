@@ -21,13 +21,16 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { QUICK_CHOICE_INSTRUCTIONS } from "../channel/quick-choices.js";
 import { config, pickEngine } from "../config.js";
 import type { Attachment } from "../media/attachments.js";
+import { measureTiming, recordTiming } from "../util/timing.js";
 import { personaSystemPrompt, pickPersonality } from "./personalities.js";
 import { type RunRecord, appendRunRecord, summariseUsage } from "./runlog.js";
 import { PROJECT_ROOT, SCRIPT_NAMES, executeCoachTool } from "./tooling.js";
 
 export interface AgentResponse {
+  incomplete?: boolean;
   text: string;
   sessionId?: string;
 }
@@ -109,6 +112,7 @@ export function assembleSystemPrompt(inputs: {
   if (inputs.personaAppend.trim()) {
     sections.push(`# Voice overlay\n\n${inputs.personaAppend.trim()}`);
   }
+  sections.push(QUICK_CHOICE_INSTRUCTIONS);
   return sections.join("\n\n---\n\n");
 }
 
@@ -393,7 +397,45 @@ const WORKSPACE_DECLARATIONS: any[] = [
 // ─── error classification ────────────────────────────────────────────────────
 
 const MAX_ATTEMPTS = 3;
+const TELEGRAM_QUOTA_WAIT_MS = 2000;
+const quotaCooldowns = new Map<string, number>();
+const CAPACITY_REPLY =
+  "All my configured Gemini models are at capacity right now. Free-tier limits reset within minutes to a day; try again shortly.";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+class GeminiRequestTimeoutError extends Error {
+  constructor() {
+    super("Gemini request exceeded its time limit.");
+    this.name = "GeminiRequestTimeoutError";
+  }
+}
+
+type DeadlineOptions = {
+  abortSignal: AbortSignal;
+  httpOptions: { timeout: number; retryOptions: { attempts: number } };
+};
+
+/** Abort only provider I/O; an already-running workspace save is always awaited. */
+async function withRequestDeadline<T>(
+  timeoutMs: number,
+  task: (options: DeadlineOptions) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const result = await task({
+      abortSignal: controller.signal,
+      httpOptions: { timeout: timeoutMs, retryOptions: { attempts: 1 } },
+    });
+    if (controller.signal.aborted) throw new GeminiRequestTimeoutError();
+    return result;
+  } catch (error) {
+    if (controller.signal.aborted) throw new GeminiRequestTimeoutError();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function isQuotaError(msg: string): boolean {
   return /resource.?exhausted|quota|rate.?limit|\b429\b/i.test(msg);
@@ -540,11 +582,14 @@ let availableModelsCache: Set<string> | null = null;
  * this replaces guesses with reality. Returns null when listing fails, in
  * which case the configured chain is trusted as-is.
  */
-async function getAvailableModels(ai: any): Promise<Set<string> | null> {
+async function getAvailableModels(
+  ai: any,
+  requestOptions?: DeadlineOptions,
+): Promise<Set<string> | null> {
   if (availableModelsCache) return availableModelsCache;
   try {
     const names = new Set<string>();
-    const page = await ai.models.list({ config: { pageSize: 200 } });
+    const page = await ai.models.list({ config: { pageSize: 200, ...requestOptions } });
     for await (const m of page) {
       const id = String(m?.name ?? "").replace(/^models\//, "");
       const methods = (m as any)?.supportedGenerationMethods as string[] | undefined;
@@ -593,8 +638,15 @@ export async function runGeminiAgent(opts: {
 
   const source = userLabel === "scheduled task" ? "scheduled" : "telegram";
   const startedAt = Date.now();
+  const interactive = source === "telegram";
+  const requestLimitMs = config.geminiRequestTimeoutMs ?? 20_000;
+  const responseLimitMs = config.geminiResponseTimeoutMs ?? 60_000;
+  const remainingMs = () => responseLimitMs - (Date.now() - startedAt);
+  let totalRequests = 0;
   const toolCounts: Record<string, number> = {};
+  const promptStartedAt = performance.now();
   const systemPrompt = buildSystemPrompt(chatId, modelTier);
+  recordTiming("prompt_preparation", performance.now() - promptStartedAt);
 
   const priorHistory = getHistory(chatId) ?? [];
   /** Parts for the new user turn: description text plus any images/PDFs. */
@@ -609,21 +661,87 @@ export async function runGeminiAgent(opts: {
   const { GoogleGenAI } = await import("@google/genai");
   const ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
 
+  const incompleteReply = (message: string, subtype: string, model?: string): AgentResponse => {
+    history.push({ role: "model", parts: [{ text: message }] });
+    commitHistory(chatId, history);
+    void appendRunRecord({
+      ts: new Date().toISOString(),
+      chatId,
+      userLabel,
+      source,
+      modelTier,
+      model,
+      isError: true,
+      subtype,
+      numTurns: totalRequests,
+      durationMs: Date.now() - startedAt,
+      toolCounts,
+      attempt: 1,
+      outcome: subtype,
+    });
+    return { text: message, incomplete: true };
+  };
+  const timeLimitReply = (model?: string) =>
+    incompleteReply(
+      "I reached the response time limit and stopped starting new steps. Any completed steps were kept, but I couldn't finish the full request. Ask me to continue from the completed steps.",
+      "response_timeout",
+      model,
+    );
+  const stepLimitReply = (model?: string) =>
+    incompleteReply(
+      "I ran out of steps before finishing that. Completed steps were kept; ask me to continue or break it into a smaller request.",
+      "max_turns",
+      model,
+    );
+
   // Reality first: intersect the configured chain with what this key can
   // actually call, then append the rest of the key's models as deep fallbacks.
   // The last model that answered for this tier goes first (sticky): it skips
   // the failover walk while those models stay healthy. Models under a
   // remembered per-day cap are excluded until it lifts.
-  const discovered = await getAvailableModels(ai);
+  if (interactive && remainingMs() <= 0) return timeLimitReply();
+  let discovered: Set<string> | null = null;
+  try {
+    discovered = await measureTiming("model_discovery", () =>
+      interactive
+        ? withRequestDeadline(Math.min(5_000, requestLimitMs, remainingMs()), (options) =>
+            getAvailableModels(ai, options),
+          )
+        : getAvailableModels(ai),
+    );
+  } catch (error) {
+    if (!(error instanceof GeminiRequestTimeoutError)) throw error;
+    console.warn("[gemini] Model discovery timed out; using configured models.");
+  }
+  if (interactive && remainingMs() <= 0) return timeLimitReply();
   const lastGood = loadLastGood()[modelTier] ?? null;
   const deadModels = Object.keys(loadQuotaDead());
+  for (const [model, until] of quotaCooldowns) {
+    if (until <= Date.now()) quotaCooldowns.delete(model);
+  }
+  const isCooling = (model: string) =>
+    source === "telegram" && (quotaCooldowns.get(model) ?? 0) > Date.now();
   const models = resolveRunModels(
     chain,
     discovered ? [...discovered] : null,
     modelTier,
     lastGood,
     deadModels,
-  );
+  ).filter((model) => !isCooling(model));
+  let quotaWaitMs = 0;
+  const atCapacity = (): AgentResponse => {
+    // Keep completed writes in context so a later turn will not repeat them.
+    commitHistory(
+      chatId,
+      Object.keys(toolCounts).length > 0
+        ? [...history, { role: "model", parts: [{ text: CAPACITY_REPLY }] }]
+        : priorHistory,
+    );
+    return { text: CAPACITY_REPLY, sessionId: undefined, incomplete: true };
+  };
+  if (!models.length) return atCapacity();
+  const nextModel = (model: string) =>
+    models.slice(models.indexOf(model) + 1).find((candidate) => !isCooling(candidate));
   console.log(
     `[gemini] Starting query (${models.join(" -> ")}, ${modelTier}, persona=${persona.id}):`,
     userMessage.slice(0, 100),
@@ -636,15 +754,30 @@ export async function runGeminiAgent(opts: {
       let turns = 0;
       try {
         for (; turns < maxTurns; turns++) {
-          const response: any = await ai.models.generateContent({
+          if (interactive && remainingMs() <= 0) return timeLimitReply(model);
+          if (interactive && totalRequests >= maxTurns) return stepLimitReply(model);
+          if (isCooling(model)) continue modelLoop;
+          totalRequests++;
+          const generate = (options?: DeadlineOptions) =>
+            ai.models.generateContent({
+              model,
+              contents: history,
+              config: {
+                systemInstruction: systemPrompt,
+                tools: [{ functionDeclarations: WORKSPACE_DECLARATIONS }],
+                temperature: 0.7,
+                ...options,
+              },
+            });
+          const response: any = await measureTiming(
+            "model_request",
+            () =>
+              interactive
+                ? withRequestDeadline(Math.min(requestLimitMs, remainingMs()), generate)
+                : generate(),
             model,
-            contents: history,
-            config: {
-              systemInstruction: systemPrompt,
-              tools: [{ functionDeclarations: WORKSPACE_DECLARATIONS }],
-              temperature: 0.7,
-            },
-          });
+          );
+          if (interactive && remainingMs() <= 0) return timeLimitReply(model);
 
           // Keep the model's own parts (signatures included) for replay, and read
           // the calls out of them so we never reconstruct a signature-less call.
@@ -667,7 +800,7 @@ export async function runGeminiAgent(opts: {
               modelTier,
               model,
               isError: false,
-              numTurns: turns + 1,
+              numTurns: interactive ? totalRequests : turns + 1,
               durationMs: Date.now() - startedAt,
               usage: summariseUsage({
                 input_tokens: response?.usageMetadata?.promptTokenCount,
@@ -689,15 +822,24 @@ export async function runGeminiAgent(opts: {
           history.push({ role: "model", parts: modelParts });
           const resultParts: PromptPart[] = [];
           for (const call of calls) {
-            toolCounts[call.name] = (toolCounts[call.name] ?? 0) + 1;
-            const response_ = await executeCoachTool(call.name, call.args ?? {}, chatId, {
-              deferVisuals: true,
-            });
+            let response_: Record<string, unknown>;
+            if (interactive && remainingMs() <= 0) {
+              response_ = {
+                error:
+                  "Not executed: the interactive time budget expired. No action was taken for this step.",
+              };
+            } else {
+              toolCounts[call.name] = (toolCounts[call.name] ?? 0) + 1;
+              response_ = await executeCoachTool(call.name, call.args ?? {}, chatId, {
+                deferVisuals: true,
+              });
+            }
             resultParts.push({
               functionResponse: { name: call.name, response: response_ },
             });
           }
           history.push({ role: "user", parts: resultParts });
+          if (interactive && remainingMs() <= 0) return timeLimitReply(model);
         }
 
         // Ran out of turns without a final text answer.
@@ -719,48 +861,66 @@ export async function runGeminiAgent(opts: {
           attempt: attempt + 1,
           outcome: "max turns reached",
         });
-        return { text: fallback, sessionId: `gemini-${chatId}` };
+        return { text: fallback, sessionId: `gemini-${chatId}`, incomplete: true };
       } catch (err: any) {
+        if (interactive && err instanceof GeminiRequestTimeoutError) {
+          quotaCooldowns.set(model, Math.max(quotaCooldowns.get(model) ?? 0, Date.now() + 30_000));
+          console.warn(`[gemini] ${model} exceeded its request time limit.`);
+          if (remainingMs() <= 0 || !nextModel(model)) return timeLimitReply(model);
+          continue modelLoop;
+        }
+        if (interactive && remainingMs() <= 0) return timeLimitReply(model);
         const msg = err?.message ?? String(err);
         console.error("[gemini] generateContent threw:", msg);
 
-        // Quota drained. Google's retry hint here is usually a per-minute window
-        // (tens of seconds): wait once on the same model rather than spending
-        // another model's budget, but only before any tool has run. Longer or
-        // repeated exhaustion fails over to the next model in the chain.
-        if (isQuotaError(msg)) {
-          // Per-day caps are remembered so later runs skip the dead model
-          // instead of burning an attempt on it every time. Per-minute
-          // windows use the wait below; they clear on their own.
-          if (isPerDayQuota(msg)) {
+        // Park throttled models for their full retry window; Telegram can use
+        // a healthy fallback now instead of waiting through every model's quota.
+        if (isQuotaError(msg) || err?.status === 429) {
+          const perDay = isPerDayQuota(msg);
+          if (perDay) {
             rememberQuotaDead(model, Date.now() + 24 * 3600 * 1000);
             console.warn(`[gemini] ${model} hit a per-day cap; parked for 24h`);
           }
           const retryS = parseRetrySeconds(msg);
+          const waitMs = retryS != null ? Math.ceil(retryS * 1000) + 500 : null;
+          if (source === "telegram") {
+            quotaCooldowns.set(
+              model,
+              Math.max(
+                quotaCooldowns.get(model) ?? 0,
+                Date.now() + (perDay ? 24 * 3600 * 1000 : (waitMs ?? 30_000)),
+              ),
+            );
+            const next = nextModel(model);
+            if (next) {
+              console.warn(`[gemini] ${model} hit its quota; failing over to ${next}`);
+              continue modelLoop;
+            }
+          }
           if (
+            !perDay &&
             retryS != null &&
+            waitMs != null &&
             retryS <= 30 &&
             Object.keys(toolCounts).length === 0 &&
-            attempt < MAX_ATTEMPTS - 1
+            attempt < MAX_ATTEMPTS - 1 &&
+            (source === "scheduled" || waitMs <= TELEGRAM_QUOTA_WAIT_MS - quotaWaitMs)
           ) {
-            const waitMs = Math.ceil(retryS * 1000) + 500;
+            if (interactive && waitMs >= remainingMs()) return timeLimitReply(model);
             console.warn(
               `[gemini] ${model} rate window is ${retryS}s; waiting then retrying same model`,
             );
-            await sleep(waitMs);
+            quotaWaitMs += waitMs;
+            await measureTiming("retry_wait", () => sleep(waitMs), model);
             continue;
           }
 
-          const next = models[models.indexOf(model) + 1];
+          const next = nextModel(model);
           if (next) {
             console.warn(`[gemini] ${model} hit its quota; failing over to ${next}`);
             continue modelLoop;
           }
-          commitHistory(chatId, history.slice(0, -1)); // nothing will answer it
-          return {
-            text: "All my configured Gemini models are at capacity right now. Free-tier limits reset within minutes to a day; try again shortly.",
-            sessionId: undefined,
-          };
+          return atCapacity();
         }
 
         // Server-side overload (503/UNAVAILABLE, "high demand"): the model is
@@ -769,22 +929,18 @@ export async function runGeminiAgent(opts: {
         // slowly, three times, before giving up without ever trying the next
         // model in the chain.
         if (isOverloadedError(msg)) {
-          const next = models[models.indexOf(model) + 1];
+          const next = nextModel(model);
           if (next) {
             console.warn(`[gemini] ${model} overloaded; failing over to ${next}`);
             continue modelLoop;
           }
-          commitHistory(chatId, history.slice(0, -1)); // nothing will answer it
-          return {
-            text: "All my configured Gemini models are at capacity right now. Free-tier limits reset within minutes to a day; try again shortly.",
-            sessionId: undefined,
-          };
+          return atCapacity();
         }
 
         // This model id does not exist for this key (bad guess or retired id):
         // skip to the next candidate rather than dying on it.
         if (isModelUnavailableError(msg)) {
-          const next = models[models.indexOf(model) + 1];
+          const next = nextModel(model);
           if (next) {
             console.warn(`[gemini] ${model} unavailable (${msg.slice(0, 140)}); trying ${next}`);
             continue modelLoop;
@@ -799,13 +955,14 @@ export async function runGeminiAgent(opts: {
         if (isTransientError(msg) && attempt < MAX_ATTEMPTS - 1) {
           if (Object.keys(toolCounts).length === 0) {
             const waitMs = Math.min(2 ** attempt, 8) * 1000;
+            if (interactive && waitMs >= remainingMs()) return timeLimitReply(model);
             console.warn(
               `[gemini] transient error; retry ${attempt + 1}/${MAX_ATTEMPTS - 1} in ${waitMs}ms`,
             );
-            await sleep(waitMs);
+            await measureTiming("retry_wait", () => sleep(waitMs), model);
             continue;
           }
-          const next = models[models.indexOf(model) + 1];
+          const next = nextModel(model);
           if (next) {
             console.warn(`[gemini] ${model} transient after tools ran; failing over to ${next}`);
             continue modelLoop;
@@ -830,6 +987,6 @@ export async function runGeminiAgent(opts: {
       }
     }
   }
-  // Unreachable: every chain iteration ends in a return or a throw.
-  throw new Error("Gemini engine exhausted its model chain.");
+  // Another concurrent run may have cooled the remaining candidates.
+  return atCapacity();
 }

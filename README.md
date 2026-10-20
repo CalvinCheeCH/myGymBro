@@ -98,6 +98,10 @@ progress through a conversation in Telegram.
 - **Coaching built around you.** Get today's session with `/today` or a weekly plan with
   `/plan`, using your goals, equipment, schedule, reported recovery, and recorded training
   history to guide the recommendations.
+- **Tap your next step.** `/today` opens your saved session with Start or Change
+  buttons. Answer short coaching questions with relevant choices, or type your own
+  answer. Saved-plan menus avoid an AI round trip; new personalized advice still
+  uses your chosen AI provider.
 - **Log between sets.** Send shorthand like `bench 60x12` while you rest. Supported quick
   logs get a brief acknowledgement; say `done` to organize your sets, reps, and loads into
   a session record in Notion.
@@ -474,7 +478,8 @@ Send these commands in your private Telegram chat with the bot:
 - `/commands`: show the command list without an AI call.
 - `/setup`: create or repair the Notion workspace, dashboard, databases, and libraries.
 - `/log`: start logging a workout; include details, for example `/log bench 60x12`.
-- `/today`: recommend today's session using your goals, plan, and recent logs.
+- `/today`: see today's saved session with Start/Change buttons, or choose a focus
+  for a recommendation when no clear saved session is available.
 - `/plan`: build a weekly training plan and save it to Notion.
 - `/progress`: get a written review of your recorded workouts.
 - `/report`: send this week's training report card, with a comparison against the same

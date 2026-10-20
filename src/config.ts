@@ -45,6 +45,12 @@ export const config = {
   // jumping between them such effective headroom.
   geminiSmartRouting: (process.env.GEMINI_SMART_ROUTING ?? "true") !== "false",
   geminiHistoryFile: process.env.GEMINI_HISTORY_FILE ?? "./data/gemini-history.json",
+  geminiRequestTimeoutMs: parsePositiveInteger("GEMINI_REQUEST_TIMEOUT_MS", 20_000, 2_147_483_647),
+  geminiResponseTimeoutMs: parsePositiveInteger(
+    "GEMINI_RESPONSE_TIMEOUT_MS",
+    60_000,
+    2_147_483_647,
+  ),
   // Defaults list only ids confirmed to exist for new free keys; at runtime the
   // engine asks the key for its full model list (ListModels) and appends every
   // other capable model it finds, so extra generations are used when available
@@ -141,15 +147,19 @@ function requireEnv(name: string): string {
   return value;
 }
 
-function parsePositiveInteger(name: string, fallback: number): number {
+function parsePositiveInteger(
+  name: string,
+  fallback: number,
+  maximum = Number.MAX_SAFE_INTEGER,
+): number {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === "") return fallback;
   if (!/^\d+$/.test(raw.trim())) {
     throw new Error(`${name} must be a positive whole number; received ${JSON.stringify(raw)}`);
   }
   const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw new Error(`${name} must be a positive whole number; received ${JSON.stringify(raw)}`);
+  if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+    throw new Error(`${name} must be a positive whole number no greater than ${maximum}.`);
   }
   return value;
 }

@@ -76,3 +76,31 @@ test("the coach can read its instructions but cannot read internal development n
     assert.equal(result.error, "That project path is not available to the coach.");
   }
 });
+
+test("Gemini interactive deadlines have safe defaults and reject invalid timer ranges", async () => {
+  const names = ["GEMINI_REQUEST_TIMEOUT_MS", "GEMINI_RESPONSE_TIMEOUT_MS"];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  try {
+    for (const name of names) Reflect.deleteProperty(process.env, name);
+    const defaults = await loadConfig();
+    assert.equal(defaults.config.geminiRequestTimeoutMs, 20_000);
+    assert.equal(defaults.config.geminiResponseTimeoutMs, 60_000);
+    process.env.GEMINI_REQUEST_TIMEOUT_MS = "1500";
+    process.env.GEMINI_RESPONSE_TIMEOUT_MS = "9000";
+    const changed = await loadConfig();
+    assert.equal(changed.config.geminiRequestTimeoutMs, 1500);
+    assert.equal(changed.config.geminiResponseTimeoutMs, 9000);
+    for (const name of names) {
+      for (const invalid of ["0", "-1", "1.5", "invalid", "2147483648", "9007199254740993"]) {
+        process.env[name] = invalid;
+        await assert.rejects(loadConfig(), new RegExp(name));
+      }
+      process.env[name] = "1000";
+    }
+  } finally {
+    for (const name of names) {
+      if (previous[name] === undefined) Reflect.deleteProperty(process.env, name);
+      else process.env[name] = previous[name];
+    }
+  }
+});

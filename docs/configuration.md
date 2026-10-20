@@ -33,6 +33,26 @@ same restricted workspace tools and image/PDF attachments as the other engines. 
 Responses API conversation continuation; OpenAI stores response objects for 30 days by
 default. See the official [conversation state guide](https://developers.openai.com/api/docs/guides/conversation-state).
 
+## Gemini response limits
+
+| Variable | Default | What it is |
+|---|---|---|
+| `GEMINI_REQUEST_TIMEOUT_MS` | `20000` | Maximum time for one interactive Gemini generation call, in milliseconds. A timed-out call is cancelled and another eligible model is tried within the remaining response budget. |
+| `GEMINI_RESPONSE_TIMEOUT_MS` | `60000` | Interactive wall-time budget after the agent starts. Includes model calls, discovery, retries and tools; excludes earlier queue waiting and Telegram delivery. |
+
+Both settings must be positive whole milliseconds, no greater than `2147483647`.
+Model discovery has a five-second cap or the remaining budget, whichever is
+shorter. Interactive SDK retries are disabled; the bot owns retry/fallback timing.
+Scheduled tasks keep their existing policy.
+
+A running workspace save is allowed to finish even if it crosses the response
+budget. The coach then stops starting new steps, preserves completed tool results,
+and reports that the full request is unfinished. Remaining tools from the same
+model response receive explicit skipped results. Workout completion retains its
+local set ledger on an incomplete reply, so a later continuation can use it.
+These are safe work limits, not a guarantee of a full reply within 60 seconds:
+queue waiting, a running save, and Telegram delivery can add time.
+
 ## Notion (optional but recommended)
 
 | Variable | What it is |

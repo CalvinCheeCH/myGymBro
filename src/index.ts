@@ -1,8 +1,9 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
 import http from "node:http";
 import { Bot } from "grammy";
 import { isMealLog } from "./agent/classify.js";
-import { QueueFullError, enqueueChatRun } from "./agent/coordinator.js";
+import { QueueFullError, drainChatRuns, enqueueChatRun } from "./agent/coordinator.js";
 import { clearGeminiHistory, evictExpiredGemini } from "./agent/gemini.js";
 import { clearOpenAIHistory, evictExpiredOpenAI } from "./agent/openai.js";
 import {
@@ -27,9 +28,17 @@ import { clearSession, evictExpired } from "./agent/sessions.js";
 import { executeCoachTool } from "./agent/tooling.js";
 import { googleCalendarConfigured } from "./calendar/status.js";
 import { type AlbumItem, mergeAlbum } from "./channel/album.js";
-import { toPlainText, toTelegramHtml } from "./channel/format.js";
-import { registerBot, sendMessage, splitMessage } from "./channel/notify.js";
+import { releaseChatIntake, withChatIntake } from "./channel/intake.js";
+import { registerBot, sendMessage } from "./channel/notify.js";
 import { isAllowed } from "./channel/permissions.js";
+import { startPolling } from "./channel/polling.js";
+import {
+  handleQuickChoice,
+  isTodayRequest,
+  showTodayChoices,
+} from "./channel/quick-choice-flow.js";
+import { choiceReplyContext, parseQuickChoices, quickChoices } from "./channel/quick-choices.js";
+import { telegramApiTransformer } from "./channel/telegram-api.js";
 import { registerTelegramWebhook, startWebhookServer } from "./channel/webhook-server.js";
 import { checkClaudeAuth, config } from "./config.js";
 import { type Attachment, isSupportedAttachment } from "./media/attachments.js";
@@ -44,27 +53,45 @@ import { notionConfigured } from "./notion/status.js";
 import { initScheduler } from "./scheduler/scheduler.js";
 import { startSchedulerServer } from "./scheduler/server.js";
 import { writeJsonAtomic } from "./util/atomicfile.js";
-import { redactSecrets } from "./util/redact.js";
+import {
+  flushTimings,
+  measureTiming,
+  retainTimingUntil,
+  startTiming,
+  withResponseTiming,
+  withoutTiming,
+} from "./util/timing.js";
 
 const bot = new Bot(config.telegramBotToken);
 
-// Respect Telegram flood control: on a 429, wait the requested retry_after and
-// retry, so replies are not dropped when messages go out too fast.
-bot.api.config.use(async (prev, method, payload, signal) => {
-  let result = await prev(method, payload, signal);
-  for (
-    let attempt = 0;
-    attempt < 3 && !result.ok && (result as any).error_code === 429;
-    attempt++
-  ) {
-    const retryAfter = (result as any).parameters?.retry_after ?? 1;
-    await new Promise((r) => setTimeout(r, (retryAfter + 0.5) * 1000));
-    result = await prev(method, payload, signal);
-  }
-  return result;
-});
+bot.api.config.use(telegramApiTransformer);
 
 registerBot(bot);
+
+// Serialize preparation only; release after reserving ordered agent work.
+bot.use(async (ctx, next) => {
+  const chatId = ctx.chat ? String(ctx.chat.id) : "";
+  const userId = ctx.from?.id;
+  if (ctx.chat?.type !== "private" || !userId || chatId !== String(userId) || !isAllowed(userId))
+    return;
+  await withResponseTiming(
+    ctx.callbackQuery ? "callback" : "message",
+    async () => {
+      const finishIntakeWait = startTiming("intake_wait");
+      await withChatIntake(chatId, async () => {
+        finishIntakeWait();
+        await next();
+      });
+    },
+    ctx.message?.date,
+  );
+});
+
+function admitChatRun<T>(chatId: string, task: () => Promise<T>, releaseIntake = true): Promise<T> {
+  const run = enqueueChatRun(chatId, task);
+  if (releaseIntake) releaseChatIntake();
+  return run;
+}
 
 // ─── Command shortcuts ───────────────────────────────────────────────
 //
@@ -95,7 +122,7 @@ const COMMAND_PROMPTS: Record<string, string> = {
 
 const BOT_COMMANDS: Array<{ cmd: string; desc: string }> = [
   { cmd: "/log", desc: "log a workout (asks what you did)" },
-  { cmd: "/today", desc: "today's recommended session" },
+  { cmd: "/today", desc: "see today's saved session or choose a workout" },
   { cmd: "/plan", desc: "build next week's plan to Notion" },
   { cmd: "/progress", desc: "progress report from your logs" },
   { cmd: "/report", desc: "weekly report card (/report monthly for monthly)" },
@@ -137,6 +164,7 @@ function validPersonaIds(): string {
 
 /** Fresh chat, same as /new: a voice switch must not inherit old voice turns. */
 function freshChat(chatId: string): void {
+  quickChoices.clear(chatId);
   clearSession(chatId);
   clearGeminiHistory(chatId);
   clearOpenAIHistory(chatId);
@@ -295,6 +323,7 @@ async function handle(opts: {
   typing: () => Promise<void>;
 }) {
   const { chatId, userLabel, text, attachments, replyTo, typing } = opts;
+  const isCurrentQuestion = quickChoices.begin(chatId, opts.userId);
 
   // Classify every message; each engine applies its own policy. Claude keeps the
   // fast tier opt-in via FAST_TIER_ENABLED. Gemini uses it for context-based
@@ -343,7 +372,7 @@ async function handle(opts: {
     const applied = applyRapidMessage(base, text);
     rapidLedgers.set(chatId, { ledger: applied.ledger, updatedAt: Date.now() });
     saveRapidLedgers();
-    await replyTo("Noted.").catch(() => {});
+    const acknowledgement = replyTo("Noted.").catch(() => {});
     const reportFailure = async (err: any) => {
       console.error("[index] Background rapid-fire run failed:", err?.message);
       await replyTo(
@@ -352,30 +381,43 @@ async function handle(opts: {
           : "Hmm, that last one may not have saved. Send it again and I will make sure it sticks.",
       ).catch(() => {});
     };
-    void enqueueChatRun(chatId, async () => {
+    const background = admitChatRun(chatId, async () => {
+      await acknowledgement;
       try {
         if (isVisualRefreshPaused()) throw new Error("Workspace reset is in progress.");
-        const response = await runAgent({
-          userMessage: text,
-          chatId,
-          userLabel,
-          modelTier,
-          attachments,
-          onProgress: undefined,
-        });
-        if (response.text?.includes("?") || isCorrectionConfirm(response.text ?? "")) {
-          await replyTo(response.text).catch(() => {});
+        const response = await measureTiming("agent", () =>
+          runAgent({
+            userMessage: text,
+            chatId,
+            userLabel,
+            modelTier,
+            attachments,
+            onProgress: undefined,
+          }),
+        );
+        const responseText = isCurrentQuestion()
+          ? response.text
+          : parseQuickChoices(response.text).text;
+        if (
+          response.incomplete ||
+          responseText?.includes("?") ||
+          parseQuickChoices(responseText ?? "").choices ||
+          isCorrectionConfirm(responseText ?? "")
+        ) {
+          await replyTo(responseText).catch(() => {});
         }
       } catch (error) {
         await reportFailure(error);
       } finally {
-        void flushVisualRefreshes(chatId);
+        void withoutTiming(() => flushVisualRefreshes(chatId));
       }
     }).catch(reportFailure);
+    retainTimingUntil(background);
+    await acknowledgement;
     return;
   }
 
-  await typing().catch(() => {});
+  void typing().catch(() => {});
 
   // Keep a typing indicator alive while the agent works (it lasts ~5s per call).
   const typingTimer = setInterval(() => typing().catch(() => {}), 4500);
@@ -428,26 +470,35 @@ async function handle(opts: {
     );
   };
   try {
-    await enqueueChatRun(chatId, async () => {
-      try {
-        if (isVisualRefreshPaused()) throw new Error("Workspace reset is in progress.");
-        const response = await runAgent({
-          userMessage: outbound,
-          chatId,
-          userLabel,
-          modelTier,
-          attachments,
-          onProgress: undefined,
-        });
-        await replyTo(response.text || "(no response)");
-        if (final) sessionStarts.delete(chatId);
-        if (final) clearRapidLedger(chatId);
-      } catch (error) {
-        await reportFailure(error);
-      } finally {
-        void flushVisualRefreshes(chatId);
-      }
-    });
+    await admitChatRun(
+      chatId,
+      async () => {
+        try {
+          if (isVisualRefreshPaused()) throw new Error("Workspace reset is in progress.");
+          const response = await measureTiming("agent", () =>
+            runAgent({
+              userMessage: outbound,
+              chatId,
+              userLabel,
+              modelTier,
+              attachments,
+              onProgress: undefined,
+            }),
+          );
+          const responseText = isCurrentQuestion()
+            ? response.text
+            : parseQuickChoices(response.text).text;
+          await replyTo(responseText || "(no response)");
+          if (final && !response.incomplete) sessionStarts.delete(chatId);
+          if (final && !response.incomplete) clearRapidLedger(chatId);
+        } catch (error) {
+          await reportFailure(error);
+        } finally {
+          void withoutTiming(() => flushVisualRefreshes(chatId));
+        }
+      },
+      !final,
+    );
   } catch (err: any) {
     await reportFailure(err);
   } finally {
@@ -482,39 +533,93 @@ interface BufferedMessage extends AlbumItem {
   replyTo: (text: string) => Promise<void>;
 }
 
-const albumBuffers = new Map<string, { items: BufferedMessage[]; timer: NodeJS.Timeout }>();
+type BufferedAlbum = {
+  items: BufferedMessage[];
+  timer: NodeJS.Timeout;
+  done: Promise<void>;
+  resolve: () => void;
+  finishWaits: Array<() => void>;
+  run: ReturnType<typeof AsyncLocalStorage.snapshot>;
+};
+const albumBuffers = new Map<string, BufferedAlbum>();
+
+function scheduleAlbum(key: string): NodeJS.Timeout {
+  return setTimeout(() => {
+    const work = flushAlbum(key);
+    retainTimingUntil(work);
+    void work.catch(() => console.warn("[album] Buffered message processing failed."));
+  }, ALBUM_WINDOW_MS);
+}
 
 function bufferAlbum(key: string, item: BufferedMessage): void {
   let buf = albumBuffers.get(key);
   if (!buf) {
+    let resolve!: () => void;
+    const done = new Promise<void>((finish) => {
+      resolve = finish;
+    });
     buf = {
       items: [],
-      timer: setTimeout(() => void flushAlbum(key), ALBUM_WINDOW_MS),
+      timer: scheduleAlbum(key),
+      done,
+      resolve,
+      finishWaits: [],
+      run: AsyncLocalStorage.snapshot(),
     };
     albumBuffers.set(key, buf);
   } else {
     clearTimeout(buf.timer);
-    buf.timer = setTimeout(() => void flushAlbum(key), ALBUM_WINDOW_MS);
+    buf.timer = scheduleAlbum(key);
   }
   buf.items.push(item);
+  buf.finishWaits.push(startTiming("album_wait"));
+  retainTimingUntil(buf.done);
+}
+
+function cancelBufferedAlbums(chatId: string): void {
+  for (const [key, buf] of albumBuffers) {
+    if (buf.items[0]?.chatId !== chatId) continue;
+    clearTimeout(buf.timer);
+    albumBuffers.delete(key);
+    for (const finish of buf.finishWaits) finish();
+    buf.resolve();
+  }
+}
+
+function flushBufferedAlbums(chatId: string): void {
+  for (const [key, buf] of albumBuffers) {
+    if (buf.items[0]?.chatId !== chatId) continue;
+    const work = flushAlbum(key);
+    retainTimingUntil(work);
+    void work.catch(() => console.warn("[album] Buffered message processing failed."));
+  }
 }
 
 async function flushAlbum(key: string): Promise<void> {
   const buf = albumBuffers.get(key);
   if (!buf) return;
+  clearTimeout(buf.timer);
   albumBuffers.delete(key);
-  const first = buf.items[0];
-  const last = buf.items[buf.items.length - 1];
-  const merged = mergeAlbum(buf.items);
-  if (!merged.text.trim() && merged.attachments.length === 0) return;
-  await handle({
-    chatId: first.chatId,
-    userId: first.userId,
-    userLabel: first.userLabel,
-    text: merged.text,
-    attachments: merged.attachments,
-    typing: last.typing,
-    replyTo: last.replyTo,
+  for (const finish of buf.finishWaits) finish();
+  await buf.run(async () => {
+    try {
+      const first = buf.items[0];
+      if (activeDataResets.has(first.chatId) || isVisualRefreshPaused()) return;
+      const last = buf.items[buf.items.length - 1];
+      const merged = mergeAlbum(buf.items);
+      if (!merged.text.trim() && merged.attachments.length === 0) return;
+      await handle({
+        chatId: first.chatId,
+        userId: first.userId,
+        userLabel: first.userLabel,
+        text: merged.text,
+        attachments: merged.attachments,
+        typing: last.typing,
+        replyTo: last.replyTo,
+      });
+    } finally {
+      buf.resolve();
+    }
   });
 }
 
@@ -577,6 +682,25 @@ async function transcribeVoiceNote(msg: any): Promise<string | null> {
   return await transcribeAudio(bytes);
 }
 
+bot.callbackQuery(/^qc:/, async (ctx) => {
+  await handleQuickChoice(
+    ctx,
+    async (text) => {
+      const userId = ctx.from!.id;
+      await handle({
+        chatId: String(ctx.chat!.id),
+        userId,
+        userLabel: ctx.from!.username ? `@${ctx.from!.username}` : `user ${userId}`,
+        text,
+        attachments: [],
+        typing: () => ctx.replyWithChatAction("typing").then(() => undefined),
+        replyTo: (out) => sendMessage(String(ctx.chat!.id), out),
+      });
+    },
+    (chatId) => activeDataResets.has(chatId) || isVisualRefreshPaused(),
+  );
+});
+
 bot.on("message", async (ctx) => {
   if (ctx.chat.type !== "private") return;
   const userId = ctx.from?.id;
@@ -598,15 +722,27 @@ bot.on("message", async (ctx) => {
   // the entities. All outbound text is scrubbed for secrets first. Defined before
   // command handling so the built-in commands answer through the same safe path.
   const replyTo = async (out: string) => {
-    const safe = redactSecrets(out);
-    for (const chunk of splitMessage(safe, 4096)) {
-      try {
-        await ctx.reply(toTelegramHtml(chunk), { parse_mode: "HTML" });
-      } catch {
-        await ctx.reply(toPlainText(chunk));
-      }
-    }
+    await sendMessage(chatId, out);
   };
+
+  const pendingQuestion = text.startsWith("/") ? undefined : quickChoices.takeText(chatId, userId);
+  if (text.startsWith("/")) quickChoices.clear(chatId);
+  if (
+    isTodayRequest(text) &&
+    !ctx.message.photo &&
+    !ctx.message.document &&
+    !ctx.message.voice &&
+    !ctx.message.audio
+  ) {
+    const today = showTodayChoices(
+      chatId,
+      userId,
+      (id) => activeDataResets.has(id) || isVisualRefreshPaused(),
+    );
+    releaseChatIntake();
+    await today;
+    return;
+  }
 
   // Map a leading slash command to its prompt or built-in action.
   if (text.startsWith("/")) {
@@ -616,12 +752,11 @@ bot.on("message", async (ctx) => {
 
     // /new clears the conversation so the next message starts fresh.
     if (cmd === "new" || cmd === "reset") {
-      clearSession(chatId);
-      clearGeminiHistory(chatId);
-      clearOpenAIHistory(chatId);
-      sessionStarts.delete(chatId);
-      clearRapidLedger(chatId);
-      await replyTo("Started a fresh session. Previous context is cleared.");
+      cancelBufferedAlbums(chatId);
+      await enqueueChatRun(chatId, async () => {
+        freshChat(chatId);
+        await replyTo("Started a fresh session. Previous context is cleared.");
+      });
       return;
     }
 
@@ -650,6 +785,7 @@ bot.on("message", async (ctx) => {
         }
 
         pendingDataResets.delete(chatId);
+        cancelBufferedAlbums(chatId);
         activeDataResets.add(chatId);
         try {
           await withVisualRefreshPaused(() =>
@@ -778,7 +914,14 @@ bot.on("message", async (ctx) => {
     // /persona lists voices or switches yours: /persona, /persona <id>,
     // /persona clear. Instant and deterministic, no agent call behind it.
     if (cmd === "persona") {
-      await replyTo(handlePersonaCommand(chatId, rest));
+      if (rest.trim()) {
+        cancelBufferedAlbums(chatId);
+        await enqueueChatRun(chatId, async () => {
+          await replyTo(handlePersonaCommand(chatId, rest));
+        });
+      } else {
+        await replyTo(handlePersonaCommand(chatId, rest));
+      }
       return;
     }
 
@@ -792,7 +935,7 @@ bot.on("message", async (ctx) => {
     if (mapped) text = rest ? `${mapped}\n\n${rest}` : mapped;
   }
 
-  const attachments = await collectAttachments(ctx.message);
+  const attachments = await measureTiming("media_download", () => collectAttachments(ctx.message));
 
   // Voice notes have no audio path to the model, so transcribe and treat the
   // transcript as the user's text. A caption (text) takes precedence if both.
@@ -805,7 +948,9 @@ bot.on("message", async (ctx) => {
       return;
     }
     try {
-      const transcript = await transcribeVoiceNote(ctx.message);
+      const transcript = await measureTiming("transcription", () =>
+        transcribeVoiceNote(ctx.message),
+      );
       if (transcript === "") {
         if (isVoice) {
           await ctx.reply("I couldn't make out that voice note. Try again, or type it out.");
@@ -832,6 +977,18 @@ bot.on("message", async (ctx) => {
     text = `[Telegram reply context, quoted from ${replyAuthor}; treat as context, not a new request:\n${replyText}]\n\n${text}`;
   }
 
+  if (
+    !replyText &&
+    pendingQuestion &&
+    text.trim() &&
+    attachments.length === 0 &&
+    !isRapidFireLog(text) &&
+    !isMealLog(text) &&
+    !isSessionFinal(text)
+  ) {
+    text = choiceReplyContext(pendingQuestion, text);
+  }
+
   if (!text.trim() && attachments.length === 0) return;
 
   // Albums (several photos sent together) arrive as separate messages sharing
@@ -852,6 +1009,7 @@ bot.on("message", async (ctx) => {
     return;
   }
 
+  flushBufferedAlbums(chatId);
   await handle({
     chatId,
     userId,
@@ -887,6 +1045,7 @@ const healthServer =
     : null;
 // In webhook mode this holds the HTTP server so shutdown can close it cleanly.
 let webhookServer: http.Server | null = null;
+let polling: ReturnType<typeof startPolling> | undefined;
 healthServer?.listen(config.port, "0.0.0.0", () =>
   console.log(`[health] Listening on :${config.port}/healthz`),
 );
@@ -945,8 +1104,8 @@ setInterval(evictExpiredOpenAI, 15 * 60 * 1000);
   // Remove any webhook left over from a previous webhook-mode deploy, or Telegram
   // will keep delivering there and getUpdates will conflict.
   await bot.api.deleteWebhook().catch(() => {});
-  // start() blocks while long-polling, so it is the last thing we await.
-  await bot.start();
+  polling = startPolling(bot);
+  await polling.done;
 })();
 
 // ─── Graceful shutdown ───────────────────────────────────────────────
@@ -955,8 +1114,10 @@ async function shutdown() {
   console.log("[shutdown] Shutting down...");
   healthServer?.close();
   webhookServer?.close();
-  // bot.stop() only applies to the long-polling loop; ignore if it was never started.
-  if (config.mode === "polling") await bot.stop().catch(() => {});
+  await polling?.stop().catch(() => {});
+  for (const key of [...albumBuffers.keys()]) await flushAlbum(key);
+  await drainChatRuns();
+  await flushTimings();
   process.exit(0);
 }
 

@@ -37,6 +37,7 @@ mock.module("@anthropic-ai/claude-agent-sdk", {
 });
 
 const { runAgent } = await import("../dist/agent/runner.js");
+const { QUICK_CHOICE_INSTRUCTIONS } = await import("../dist/channel/quick-choices.js");
 
 const initMessage = (sessionId) => ({ type: "system", subtype: "init", session_id: sessionId });
 const resultMessage = (text) => ({ type: "result", subtype: "success", result: text });
@@ -54,6 +55,7 @@ test("returns the text carried by the result message", async () => {
   assert.equal(response.text, "Squats today. Go.");
   assert.equal(response.sessionId, "sess-1");
   assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.systemPrompt.append.split(QUICK_CHOICE_INSTRUCTIONS).length - 1, 1);
 });
 
 test("resumes the stored session on the next message from the same chat", async () => {
@@ -64,6 +66,9 @@ test("resumes the stored session on the next message from the same chat", async 
 
   assert.equal(calls[0].options.resume, undefined);
   assert.equal(calls[1].options.resume, "sess-resume");
+  for (const call of calls) {
+    assert.equal(call.options.systemPrompt.append.split(QUICK_CHOICE_INSTRUCTIONS).length - 1, 1);
+  }
 });
 
 test("retries a transient failure that happens before the session starts", async () => {

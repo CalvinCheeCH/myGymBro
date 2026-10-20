@@ -1,6 +1,6 @@
 {
   "name": "mygymbro",
-  "version": "3.6.3",
+  "version": "3.7.0",
   "description": "myGymBro: a personal fitness and nutrition coach on Telegram, forked from Oak. Runs on Claude, Google Gemini, or OpenAI, backed by Notion.",
   "type": "module",
   "main": "dist/index.js",
@@ -15,6 +15,7 @@
     "start": "node --env-file-if-exists=.env dist/index.js",
     "dev": "tsx --env-file=.env src/index.ts",
     "lint": "biome check .",
+    "timings": "node --env-file-if-exists=.env scripts/response-timings.mjs",
     "check:publication": "node scripts/check-publication.mjs",
     "format": "biome format --write .",
     "pretest": "tsc",

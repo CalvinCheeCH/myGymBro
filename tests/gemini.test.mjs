@@ -2,26 +2,105 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { mock, test } from "node:test";
+import { after, beforeEach, mock, test } from "node:test";
 
 // The gemini module reads config at load time (history file path, TTL), so a
 // mock config is installed before the first dynamic import below.
 const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "oak-gemini-"));
 
+const testConfig = {
+  telegramBotToken: "test",
+  geminiApiKey: "test-key",
+  geminiModel: "gemini-test",
+  agentName: "myGymBro",
+  timezone: "Etc/UTC",
+  sessionTtlHours: 12,
+  geminiHistoryFile: path.join(TMP_DIR, "gemini-history.json"),
+  geminiSmartRouting: false,
+  geminiHeavyModels: [],
+  geminiLightModels: [],
+};
+const generationCalls = [];
+const toolCalls = [];
+const timings = [];
+let steps = [];
+let timerContext;
+let toolHandler;
+let caseId = 0;
+
 mock.module("../dist/config.js", {
+  namedExports: { pickEngine: () => "gemini", config: testConfig },
+});
+mock.module("../dist/agent/tooling.js", {
   namedExports: {
-    pickEngine: () => "gemini",
-    config: {
-      telegramBotToken: "test",
-      geminiApiKey: "test-key",
-      geminiModel: "gemini-test",
-      agentName: "myGymBro",
-      timezone: "Etc/UTC",
-      sessionTtlHours: 12,
-      geminiHistoryFile: path.join(TMP_DIR, "gemini-history.json"),
+    PROJECT_ROOT: TMP_DIR,
+    SCRIPT_NAMES: ["notion.mjs"],
+    executeCoachTool: async (name, args, chatId) => {
+      toolCalls.push({ name, args, chatId });
+      if (toolHandler) return toolHandler();
+      return { saved: true, totalCalories: 370 };
     },
   },
 });
+mock.module("../dist/agent/personalities.js", {
+  namedExports: {
+    pickPersonality: () => ({ id: "normal" }),
+    personaSystemPrompt: () => "",
+  },
+});
+mock.module("../dist/agent/runlog.js", {
+  namedExports: {
+    appendRunRecord: async () => {},
+    summariseUsage: () => undefined,
+  },
+});
+mock.module("../dist/util/timing.js", {
+  namedExports: {
+    recordTiming: (stage, durationMs, operation) => timings.push({ stage, durationMs, operation }),
+    measureTiming: async (stage, task, operation) => {
+      const startedAt = Date.now();
+      try {
+        const result = task();
+        if (stage === "retry_wait") timerContext.mock.timers.runAll();
+        return await result;
+      } finally {
+        timings.push({ stage, durationMs: Date.now() - startedAt, operation });
+      }
+    },
+  },
+});
+mock.module("@google/genai", {
+  namedExports: {
+    GoogleGenAI: class {
+      models = {
+        list: async () => (async function* () {})(),
+        generateContent: async (args) => {
+          generationCalls.push(structuredClone(args));
+          const step = steps.shift();
+          assert.ok(step, "unexpected model request");
+          if (step instanceof Error) throw step;
+          return step;
+        },
+      };
+    },
+  },
+});
+
+beforeEach((context) => {
+  timerContext = context;
+  context.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_800_000_000_000 });
+  caseId++;
+  testConfig.geminiHeavyModels = [`gemini-case-${caseId}-primary`];
+  generationCalls.length = 0;
+  toolCalls.length = 0;
+  timings.length = 0;
+  steps = [];
+  toolHandler = undefined;
+  for (const filename of ["gemini-last-good.json", "gemini-quotas.json"]) {
+    fs.rmSync(path.join(TMP_DIR, "data", filename), { force: true });
+  }
+});
+after(() => fs.rmSync(TMP_DIR, { recursive: true, force: true }));
 
 const {
   assembleSystemPrompt,
@@ -32,9 +111,12 @@ const {
   parseRetrySeconds,
   resolveRunModels,
   responseText,
+  runGeminiAgent,
   sanitizeModelParts,
   trimHistory,
 } = await import("../dist/agent/gemini.js");
+
+const { QUICK_CHOICE_INSTRUCTIONS } = await import("../dist/channel/quick-choices.js");
 
 // ─── system prompt assembly ──────────────────────────────────────────────────
 
@@ -58,6 +140,7 @@ test("assembleSystemPrompt: includes engine notes, CLAUDE.md, PERSONAL.md, skill
   assert.match(md, /Speak like a drill sergeant\./);
   assert.match(md, /Retry a rejected write only when the helper confirms nothing was written/);
   assert.match(md, /never blindly repeat an additive meal/);
+  assert.equal(md.split(QUICK_CHOICE_INSTRUCTIONS).length - 1, 1);
 });
 
 test("assembleSystemPrompt: omits PERSONAL.md section when absent", () => {
@@ -315,4 +398,214 @@ test("resolveRunModels: older generations sort first, newest stay reachable", ()
 test("resolveRunModels: null or empty discovery keeps the configured chain", () => {
   assert.deepEqual(resolveRunModels(["a", "b"], null, "standard"), ["a", "b"]);
   assert.deepEqual(resolveRunModels(["a", "b"], [], "standard"), ["a", "b"]);
+});
+
+// ─── interactive quota budget and cooldowns ─────────────────────────────────
+
+const answer = (text = "Ready.") => ({ candidates: [{ content: { parts: [{ text }] } }] });
+const quota = (seconds) => new Error(`429 RESOURCE_EXHAUSTED: Please retry in ${seconds}s.`);
+const run = (extra = {}) =>
+  runGeminiAgent({ userMessage: "What should I train today?", chatId: `chat-${caseId}`, ...extra });
+const waits = () => timings.filter(({ stage }) => stage === "retry_wait");
+
+test("runGeminiAgent: healthy requests keep their single model call and record stages", async () => {
+  steps = [answer("Upper body today.")];
+  assert.equal((await run()).text, "Upper body today.");
+  assert.equal(generationCalls.length, 1);
+  assert.equal(toolCalls.length, 0);
+  assert.equal(waits().length, 0);
+  assert.ok(timings.some(({ stage }) => stage === "prompt_preparation"));
+  assert.ok(timings.some(({ stage }) => stage === "model_discovery"));
+  assert.deepEqual(
+    timings.filter(({ stage }) => stage === "model_request").map(({ operation }) => operation),
+    testConfig.geminiHeavyModels,
+  );
+});
+
+test("runGeminiAgent: long quota hints fail over immediately and cool the throttled model", async (t) => {
+  const primary = testConfig.geminiHeavyModels[0];
+  const fallback = `gemini-case-${caseId}-fallback`;
+  testConfig.geminiHeavyModels.push(fallback);
+  steps = [quota(22), answer("Fallback answered.")];
+  assert.equal((await run()).text, "Fallback answered.");
+  assert.deepEqual(
+    generationCalls.map(({ model }) => model),
+    [primary, fallback],
+  );
+  assert.equal(waits().length, 0);
+
+  // Remove the sticky winner to prove cooldown, rather than ordering, skips it.
+  fs.rmSync(path.join(TMP_DIR, "data", "gemini-last-good.json"));
+  generationCalls.length = 0;
+  steps = [answer()];
+  await run();
+  assert.deepEqual(
+    generationCalls.map(({ model }) => model),
+    [fallback],
+  );
+
+  t.mock.timers.tick(22_500);
+  fs.rmSync(path.join(TMP_DIR, "data", "gemini-last-good.json"));
+  generationCalls.length = 0;
+  steps = [answer()];
+  await run();
+  assert.deepEqual(
+    generationCalls.map(({ model }) => model),
+    [primary],
+  );
+});
+
+test("runGeminiAgent: a lone long-throttled model returns promptly and is not hammered again", async () => {
+  steps = [quota(30)];
+  assert.match((await run()).text, /at capacity/);
+  assert.equal(generationCalls.length, 1);
+  assert.equal(waits().length, 0);
+  await run();
+  assert.equal(generationCalls.length, 1);
+});
+
+test("runGeminiAgent: short quota retries share one two-second interactive budget", async () => {
+  steps = [quota(1), quota(1), answer("Must not reach a third request.")];
+  assert.match((await run()).text, /at capacity/);
+  assert.equal(generationCalls.length, 2);
+  assert.deepEqual(
+    waits().map(({ durationMs }) => durationMs),
+    [1500],
+  );
+  assert.ok(waits().reduce((total, span) => total + span.durationMs, 0) <= 2000);
+});
+
+test("runGeminiAgent: a short single-model window can still recover within budget", async () => {
+  steps = [quota(0.2), answer("Recovered.")];
+  assert.equal((await run()).text, "Recovered.");
+  assert.equal(generationCalls.length, 2);
+  assert.deepEqual(
+    waits().map(({ durationMs }) => durationMs),
+    [700],
+  );
+});
+
+test("runGeminiAgent: scheduled tasks retain their existing longer quota retry", async () => {
+  steps = [quota(22), answer("Scheduled task finished.")];
+  assert.equal((await run({ userLabel: "scheduled task" })).text, "Scheduled task finished.");
+  assert.equal(generationCalls.length, 2);
+  assert.deepEqual(
+    waits().map(({ durationMs }) => durationMs),
+    [22_500],
+  );
+});
+
+test("runGeminiAgent: daily quota is parked without retrying even with a short hint", async () => {
+  steps = [new Error("429 GenerateRequestsPerDay: Please retry in 0.1s.")];
+  assert.match((await run()).text, /at capacity/);
+  assert.equal(generationCalls.length, 1);
+  assert.equal(waits().length, 0);
+  const dead = JSON.parse(fs.readFileSync(path.join(TMP_DIR, "data", "gemini-quotas.json")));
+  assert.equal(dead[testConfig.geminiHeavyModels[0]], Date.now() + 86_400_000);
+});
+
+const savedMealCall = () => ({
+  candidates: [
+    {
+      content: {
+        parts: [
+          {
+            functionCall: {
+              name: "run_script",
+              args: { script: "notion.mjs", args: ["log-meal"] },
+            },
+            thoughtSignature: "preserved-signature",
+          },
+        ],
+      },
+    },
+  ],
+});
+
+test("runGeminiAgent: quota fallback carries completed tool results without repeating the save", async () => {
+  const primary = testConfig.geminiHeavyModels[0];
+  const fallback = `gemini-case-${caseId}-fallback`;
+  testConfig.geminiHeavyModels.push(fallback);
+  steps = [savedMealCall(), quota(20), answer("Meal saved.")];
+  assert.equal((await run()).text, "Meal saved.");
+  assert.deepEqual(
+    generationCalls.map(({ model }) => model),
+    [primary, primary, fallback],
+  );
+  assert.equal(toolCalls.length, 1);
+  const contents = generationCalls[2].contents;
+  assert.equal(contents.at(-2).parts[0].thoughtSignature, "preserved-signature");
+  assert.deepEqual(contents.at(-1).parts[0].functionResponse.response, {
+    saved: true,
+    totalCalories: 370,
+  });
+  assert.equal(waits().length, 0);
+});
+
+test("runGeminiAgent: an exhausted chain preserves completed writes for the next turn", async (t) => {
+  steps = [savedMealCall(), quota(20)];
+  assert.match((await run()).text, /at capacity/);
+  assert.equal(toolCalls.length, 1);
+  t.mock.timers.tick(21_000);
+  steps = [answer("The earlier meal was already saved.")];
+  await run({ userMessage: "Did that save?" });
+  const nextHistory = generationCalls.at(-1).contents;
+  assert.ok(
+    nextHistory.some((content) =>
+      content.parts.some((part) => part.functionResponse?.response.saved),
+    ),
+  );
+  assert.equal(toolCalls.length, 1);
+});
+
+test("runGeminiAgent: HTTP 429 without a textual quota keyword still cools the model", async () => {
+  const error = new Error("TooManyRequests");
+  error.status = 429;
+  steps = [error];
+  assert.match((await run()).text, /at capacity/);
+  await run();
+  assert.equal(generationCalls.length, 1);
+  assert.equal(waits().length, 0);
+});
+
+test("runGeminiAgent: non-quota failures still throw without crossing model boundaries", async () => {
+  testConfig.geminiHeavyModels.push(`gemini-case-${caseId}-fallback`);
+  steps = [new Error("Invalid API key")];
+  await assert.rejects(run(), /Invalid API key/);
+  assert.equal(generationCalls.length, 1);
+  assert.equal(waits().length, 0);
+});
+
+test("runGeminiAgent: existing transient retries are retained and timed", async () => {
+  steps = [new Error("fetch failed"), new Error("socket hang up"), answer()];
+  assert.equal((await run()).text, "Ready.");
+  assert.equal(generationCalls.length, 3);
+  assert.deepEqual(
+    waits().map(({ durationMs }) => durationMs),
+    [1000, 2000],
+  );
+});
+
+test("runGeminiAgent: concurrent quota cooldown is honored between completed tool steps", async () => {
+  let releaseTool;
+  let enteredTool;
+  const toolStarted = new Promise((resolve) => {
+    enteredTool = resolve;
+  });
+  const toolFinished = new Promise((resolve) => {
+    releaseTool = resolve;
+  });
+  toolHandler = async () => {
+    enteredTool();
+    await toolFinished;
+    return { saved: true, totalCalories: 370 };
+  };
+  steps = [savedMealCall(), quota(30)];
+  const first = run({ chatId: `chat-${caseId}-first` });
+  await toolStarted;
+  assert.match((await run({ chatId: `chat-${caseId}-second` })).text, /at capacity/);
+  releaseTool();
+  assert.match((await first).text, /at capacity/);
+  assert.equal(generationCalls.length, 2);
+  assert.equal(toolCalls.length, 1);
 });

@@ -53,6 +53,7 @@ sessions.json
 schedule.json
 personas.json
 agent-runs.jsonl
+response-timings.jsonl
 gemini-history.json
 gemini-last-good.json
 gemini-quotas.json

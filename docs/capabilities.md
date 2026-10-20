@@ -31,6 +31,26 @@ Cross-cutting coaching rules (disambiguate Notion pages by parent context, read
 the day from the Telegram header, never use em dashes, etc.) are baked into these
 skills and `CLAUDE.md`.
 
+## Tap-to-answer coaching
+
+`/today` and simple questions such as "What should I train today?" first read the
+current week's saved Notion plan. A clear session gets **Start this session** and
+**Change workout** buttons; a saved rest day stays a recovery day. If there is no
+clear session, choose Upper body, Lower body, Strength & conditioning, or Something
+else. Starting the saved session or changing the menu needs no AI call. A new
+personalized recommendation still uses your profile, recovery, and training history.
+
+When useful, a coach follow-up question includes two to four short answers. This
+works across Claude, Gemini, and OpenAI without a separate AI call to create the
+buttons. **Something else** lets you type an answer, and normal typed replies
+continue to work. A tap is acknowledged before the next coaching request starts;
+it does not make the AI provider or Notion respond instantly.
+
+Only the latest question's buttons are active. They expire after 30 minutes, a
+new message or command, or a bot restart; type your answer or ask again if a menu
+expires. A Start button prepares the conversation; workouts are recorded from
+the sets and completion messages you actually send.
+
 ## Vision: photos and PDFs
 
 Send a meal, a food label, a gym machine, or a progress picture. Images and PDFs

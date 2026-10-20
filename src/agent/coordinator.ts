@@ -1,3 +1,5 @@
+import { startTiming } from "../util/timing.js";
+
 /** Serialize all agent work per chat and cap total provider queries. */
 const MAX_CONCURRENT_QUERIES = 2;
 const MAX_PENDING_PER_CHAT = 20;
@@ -36,17 +38,24 @@ function releaseSlot(): void {
 }
 
 export function enqueueChatRun<T>(chatId: string, task: () => Promise<T>): Promise<T> {
+  const finishQueueWait = startTiming("queue_wait");
   const chatPending = pendingByChat.get(chatId) ?? 0;
   if (chatPending >= MAX_PENDING_PER_CHAT || pendingTotal >= MAX_PENDING_TOTAL) {
+    finishQueueWait(true);
     return Promise.reject(new QueueFullError());
   }
   pendingByChat.set(chatId, chatPending + 1);
   pendingTotal++;
+  const finishChatWait = startTiming("chat_wait");
   const previous = chatChains.get(chatId) ?? Promise.resolve();
   const current = previous
     .catch(() => {})
     .then(async () => {
+      finishChatWait();
+      const finishSlotWait = startTiming("provider_slot_wait");
       await acquireSlot();
+      finishSlotWait();
+      finishQueueWait();
       try {
         return await task();
       } finally {
@@ -64,4 +73,9 @@ export function enqueueChatRun<T>(chatId: string, task: () => Promise<T>): Promi
   };
   void current.then(cleanup, cleanup);
   return current;
+}
+
+/** Shutdown waits for accepted saves, including detached rapid logs. */
+export async function drainChatRuns(): Promise<void> {
+  while (chatChains.size) await Promise.allSettled([...chatChains.values()]);
 }

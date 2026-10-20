@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { isVisualRefreshPaused, requestVisualRefresh } from "../notion/refresh.js";
 import { redactSecrets } from "../util/redact.js";
+import { markReplyAccepted, startTiming } from "../util/timing.js";
 
 const execFile = promisify(execFileCallback);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -277,7 +278,7 @@ async function runScript(
   }
 }
 
-export async function executeCoachTool(
+async function executeCoachToolInternal(
   name: string,
   args: Record<string, unknown>,
   chatId: string,
@@ -338,6 +339,26 @@ export async function executeCoachTool(
   } catch (error) {
     return { error: redactSecrets((error as Error).message) };
   }
+}
+
+export async function executeCoachTool(
+  name: string,
+  args: Record<string, unknown>,
+  chatId: string,
+  options: { deferVisuals?: boolean } = {},
+): Promise<Record<string, unknown>> {
+  const operation =
+    name === "run_script" &&
+    typeof args.script === "string" &&
+    SCRIPT_NAMES.includes(args.script as CoachScript)
+      ? `${name}:${args.script}`
+      : name;
+  const finish = startTiming("tool", operation);
+  const result = await executeCoachToolInternal(name, args, chatId, options);
+  const failed = Boolean(result.error || result.exitCode);
+  finish(failed);
+  if (!failed && name === "run_script" && args.script === "send-photo.mjs") markReplyAccepted();
+  return result;
 }
 
 export const COACH_TOOL_INSTRUCTIONS =

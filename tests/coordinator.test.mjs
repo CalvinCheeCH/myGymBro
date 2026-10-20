@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import { flushTimings, withResponseTiming } from "../dist/util/timing.js";
 
 let instance = 0;
 const loadCoordinator = () => import(`../dist/agent/coordinator.js?instance=${++instance}`);
@@ -112,4 +117,139 @@ test("total cap counts active and waiting chats and releases capacity after fail
   assert.equal(maximum, 2);
   assert.equal(active, 0);
   assert.equal(await enqueueChatRun("overflow", async () => "next"), "next");
+});
+
+test("shutdown drain waits for accepted queued work even when an earlier task fails", async () => {
+  const { enqueueChatRun, drainChatRuns } = await loadCoordinator();
+  const gate = deferred();
+  const order = [];
+  const first = enqueueChatRun("42", async () => {
+    await gate.promise;
+    order.push("first");
+    throw new Error("expected failure");
+  });
+  const failure = assert.rejects(first, /expected failure/);
+  const next = enqueueChatRun("42", async () => order.push("next"));
+  let drained = false;
+  const drain = drainChatRuns().then(() => {
+    drained = true;
+  });
+  await settle();
+  assert.equal(drained, false);
+  gate.resolve();
+  await Promise.all([failure, next, drain]);
+  assert.deepEqual(order, ["first", "next"]);
+  assert.equal(drained, true);
+});
+
+async function captureQueueTiming(task) {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "mygymbro-queue-timing-"));
+  const file = path.join(directory, "timings.jsonl");
+  const previousFile = process.env.RESPONSE_TIMING_FILE;
+  process.env.RESPONSE_TIMING_FILE = file;
+  try {
+    await task();
+    await flushTimings();
+    return (await fs.readFile(file, "utf8")).trim().split("\n").map(JSON.parse);
+  } finally {
+    await flushTimings();
+    if (previousFile === undefined) Reflect.deleteProperty(process.env, "RESPONSE_TIMING_FILE");
+    else process.env.RESPONSE_TIMING_FILE = previousFile;
+    assert.equal(path.dirname(directory), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(directory).startsWith("mygymbro-queue-timing-"));
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+}
+
+function queueSpan(record, stage) {
+  const matches = record.spans.filter((span) => span.stage === stage);
+  assert.equal(matches.length, 1, `expected one ${stage} span`);
+  return matches[0];
+}
+
+test("timings distinguish a previous same-chat task from a provider-slot wait without reordering", async () => {
+  const { enqueueChatRun } = await loadCoordinator();
+  const gate = deferred();
+  const order = [];
+  const [record] = await captureQueueTiming(async () => {
+    const first = enqueueChatRun("same-chat", async () => {
+      order.push("first-start");
+      await gate.promise;
+      order.push("first-finish");
+    });
+    await settle();
+    const second = withResponseTiming("message", () =>
+      enqueueChatRun("same-chat", async () => order.push("second")),
+    );
+    await delay(30);
+    assert.deepEqual(order, ["first-start"]);
+    gate.resolve();
+    await Promise.all([first, second]);
+  });
+  assert.deepEqual(order, ["first-start", "first-finish", "second"]);
+  const chat = queueSpan(record, "chat_wait");
+  const slot = queueSpan(record, "provider_slot_wait");
+  const total = queueSpan(record, "queue_wait");
+  assert.ok(chat.durationMs >= 20);
+  assert.ok(chat.durationMs > slot.durationMs);
+  assert.ok(slot.startMs >= chat.startMs + chat.durationMs - 0.2);
+  assert.ok(total.durationMs >= chat.durationMs);
+  assert.equal(JSON.stringify(record).includes("same-chat"), false);
+});
+
+test("timings attribute a third independent chat to the global provider slot rather than its chat chain", async () => {
+  const { enqueueChatRun } = await loadCoordinator();
+  const gate = deferred();
+  const order = [];
+  const [record] = await captureQueueTiming(async () => {
+    const one = enqueueChatRun("one", async () => {
+      order.push("one");
+      await gate.promise;
+    });
+    const two = enqueueChatRun("two", async () => {
+      order.push("two");
+      await gate.promise;
+    });
+    await settle();
+    const three = withResponseTiming("message", () =>
+      enqueueChatRun("three", async () => order.push("three")),
+    );
+    await delay(30);
+    assert.deepEqual(order, ["one", "two"]);
+    gate.resolve();
+    await Promise.all([one, two, three]);
+  });
+  assert.deepEqual(order, ["one", "two", "three"]);
+  const chat = queueSpan(record, "chat_wait");
+  const slot = queueSpan(record, "provider_slot_wait");
+  const total = queueSpan(record, "queue_wait");
+  assert.ok(slot.durationMs >= 20);
+  assert.ok(slot.durationMs > chat.durationMs);
+  assert.ok(total.durationMs >= slot.durationMs);
+  assert.equal(JSON.stringify(record).includes('"three"'), false);
+});
+
+test("queue-full rejection retains its total error span without inventing chat or slot waits", async () => {
+  const { enqueueChatRun, QueueFullError } = await loadCoordinator();
+  const gate = deferred();
+  const [record] = await captureQueueTiming(async () => {
+    const accepted = Array.from({ length: 20 }, () =>
+      enqueueChatRun("full-chat", async () => gate.promise),
+    );
+    await settle();
+    await assert.rejects(
+      withResponseTiming("message", () =>
+        enqueueChatRun("full-chat", async () => assert.fail("rejected task ran")),
+      ),
+      QueueFullError,
+    );
+    gate.resolve();
+    await Promise.all(accepted);
+  });
+  assert.equal(record.error, true);
+  assert.deepEqual(
+    record.spans.map((span) => span.stage),
+    ["queue_wait"],
+  );
+  assert.equal(queueSpan(record, "queue_wait").error, true);
 });
