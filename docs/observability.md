@@ -52,6 +52,12 @@ Bare `/foodlib` reads the saved library directly. Its trace contains a
 The read has a ten-second timeout; Notion or network failures return a retry
 message. Requests with extra questions still use the coach.
 
+Bare `/progress` has one `notion_read` span followed by an `agent` span for the
+coached interpretation. Gemini normally shows one `model_request` and no model
+tool calls for this command; retries and fallback can add requests. The read
+has a 15-second timeout and is ordered after accepted workout saves. Extra
+questions use the regular agent path.
+
 Private JSONL records are written to `./data/response-timings.jsonl`; set
 `RESPONSE_TIMING_FILE` to use another location. Each update gets a random local
 request ID. Records contain numeric stage durations, fixed operation names,

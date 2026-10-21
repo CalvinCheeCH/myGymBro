@@ -109,6 +109,25 @@ node scripts/exercise-db.mjs --name "romanian deadlift" --json
 It honours your equipment and injuries from `PERSONAL.md` and can share both the
 start and end demo image for a movement.
 
+## Written progress reviews
+
+Bare `/progress` reads recorded training once and asks your selected coach for a
+short review of the latest 28 calendar days against the preceding 28. The review
+keeps your coaching voice and known profile. It uses recorded training days,
+recognizable set counts, and sourced best sets; it does not render a report card
+or make the model request the same history through multiple tools. A healthy
+review needs one model generation. Existing provider retry and fallback rules
+still apply when a request fails.
+
+Pending workout saves and buffered photos finish before this read. Planned and
+skipped rows are excluded. Up to 60 matching rows are read, and limited coverage
+is explicit. Free-form activity without recognizable sets or a recorded duration
+may be absent from these totals. Read failures are reported as failures, not zero
+training. If coaching cannot finish, the bot shows the recorded facts instead.
+
+`/progress <question>` and attached photos retain the normal coaching tools for
+deeper analysis, other periods, or saving a requested review.
+
 ## Training math
 
 Deterministic arithmetic lives in `scripts/progression.mjs` so prescriptions never

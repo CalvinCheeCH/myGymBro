@@ -136,3 +136,73 @@ test("clears the session when the usage limit is hit, so the next turn starts fr
 
   assert.equal(calls[0].options.resume, undefined);
 });
+
+test("precomputed Claude reviews preserve the session but expose no tools or external MCP servers", async () => {
+  script = [
+    { messages: [initMessage("review-session"), resultMessage("Keep training consistently.")] },
+  ];
+  await runAgent({ userMessage: "earlier chat", chatId: "review-claude" });
+  const response = await runAgent({
+    userMessage: "/progress\nSaved workout facts.",
+    chatId: "review-claude",
+    toolsEnabled: false,
+  });
+  assert.equal(response.text, "Keep training consistently.");
+  const options = calls.at(-1).options;
+  assert.equal(options.resume, "review-session");
+  assert.deepEqual(options.tools, []);
+  assert.deepEqual(options.allowedTools, []);
+  assert.deepEqual(options.skills, []);
+  assert.deepEqual(options.plugins, []);
+  assert.deepEqual(options.mcpServers, {});
+  assert.equal(options.strictMcpConfig, true);
+  assert.equal(options.maxTurns, 1);
+  assert.match(options.systemPrompt.append, /read-only coaching review/);
+  const deny = await options.hooks.PreToolUse[0].hooks[0]({ tool_name: "mcp__other__write" });
+  assert.equal(deny.hookSpecificOutput.permissionDecision, "deny");
+  await runAgent({ userMessage: "normal next question", chatId: "review-claude" });
+  assert.ok(calls.at(-1).options.tools.includes("mcp__coach__run_script"));
+  assert.equal(calls.at(-1).options.maxTurns, 60);
+});
+
+test("precomputed Claude review cannot report a blocked tool request as successful coaching", async () => {
+  script = [
+    {
+      messages: [
+        initMessage("review-denied"),
+        {
+          type: "assistant",
+          message: { content: [{ type: "tool_use", name: "mcp__coach__run_script", input: {} }] },
+        },
+        resultMessage("Saved it."),
+      ],
+    },
+  ];
+  const response = await runAgent({
+    userMessage: "Saved facts only",
+    chatId: "review-claude-denied",
+    toolsEnabled: false,
+  });
+  assert.equal(response.incomplete, true);
+  assert.match(response.text, /couldn't finish the coaching review/);
+  assert.doesNotMatch(response.text, /Saved it/);
+  assert.equal(calls.length, 1);
+});
+
+test("Claude usage limits mark precomputed reviews incomplete without changing normal command behavior", async () => {
+  script = [{ throws: new Error("Claude AI usage limit reached") }];
+  const review = await runAgent({
+    userMessage: "Saved workout facts.",
+    chatId: "review-usage-limit",
+    toolsEnabled: false,
+  });
+  assert.match(review.text, /usage limit/);
+  assert.equal(review.incomplete, true);
+  assert.equal(review.sessionId, undefined);
+  const normal = await runAgent({
+    userMessage: "A normal question.",
+    chatId: "normal-usage-limit",
+  });
+  assert.match(normal.text, /usage limit/);
+  assert.equal(normal.incomplete, undefined);
+});

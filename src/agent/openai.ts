@@ -4,6 +4,7 @@ import path from "node:path";
 import { config } from "../config.js";
 import type { Attachment } from "../media/attachments.js";
 import { buildSystemPrompt } from "./gemini.js";
+import { PRECOMPUTED_REVIEW_FAILURE, PRECOMPUTED_REVIEW_INSTRUCTIONS } from "./review-mode.js";
 import { type RunRecord, appendRunRecord, summariseUsage } from "./runlog.js";
 import { executeCoachTool } from "./tooling.js";
 
@@ -174,12 +175,18 @@ export async function runOpenAIAgent(opts: {
   modelTier?: "fast" | "standard";
   attachments?: Attachment[];
   onProgress?: (text: string) => void;
-}): Promise<{ text: string; sessionId?: string }> {
+  toolsEnabled?: boolean;
+}): Promise<{ text: string; sessionId?: string; incomplete?: boolean }> {
   const { chatId, userMessage, userLabel, attachments } = opts;
   const now = new Date().toLocaleString("en-GB", { timeZone: config.timezone });
   const useFastModel = usesOpenAIFastModel(opts.modelTier, attachments?.length ?? 0);
   const model = useFastModel ? config.openaiModelFast : config.openaiModel;
-  const instructions = buildSystemPrompt(chatId, useFastModel ? "fast" : "standard");
+  const instructions = [
+    buildSystemPrompt(chatId, useFastModel ? "fast" : "standard"),
+    opts.toolsEnabled === false ? PRECOMPUTED_REVIEW_INSTRUCTIONS : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   let conversation = conversations.get(chatId);
   if (conversation && Date.now() - conversation.lastAccessed > TTL_MS) {
     conversations.delete(chatId);
@@ -204,17 +211,26 @@ export async function runOpenAIAgent(opts: {
         instructions,
         input,
         store: true,
-        tools: TOOLS,
+        tools: opts.toolsEnabled === false ? [] : TOOLS,
+        ...(opts.toolsEnabled === false ? { tool_choice: "none" } : {}),
         reasoning: { effort: useFastModel ? "low" : config.reasoningEffort },
         ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
       });
       previousResponseId = response.id;
       const calls = (response.output ?? []).filter((item: any) => item.type === "function_call");
-      if (!calls.length) {
-        const text = String(response.output_text ?? "").trim();
+      if (!calls.length || opts.toolsEnabled === false) {
+        const unexpectedCall = calls.length > 0;
+        const incompleteReview =
+          unexpectedCall ||
+          (opts.toolsEnabled === false && response.status && response.status !== "completed");
+        const text = incompleteReview
+          ? PRECOMPUTED_REVIEW_FAILURE
+          : String(response.output_text ?? "").trim();
         if (!text) throw new Error("OpenAI returned no text response.");
-        conversations.set(chatId, { responseId: response.id, lastAccessed: Date.now() });
-        persist();
+        if (!incompleteReview) {
+          conversations.set(chatId, { responseId: response.id, lastAccessed: Date.now() });
+          persist();
+        }
         const record: RunRecord = {
           ts: new Date().toISOString(),
           chatId,
@@ -222,7 +238,10 @@ export async function runOpenAIAgent(opts: {
           source,
           modelTier: opts.modelTier ?? "standard",
           model,
-          isError: false,
+          isError: Boolean(incompleteReview),
+          ...(incompleteReview
+            ? { subtype: unexpectedCall ? "unexpected_tool_call" : "incomplete_review" }
+            : {}),
           numTurns: turn + 1,
           durationMs: Date.now() - startedAt,
           usage: summariseUsage(response.usage),
@@ -231,7 +250,9 @@ export async function runOpenAIAgent(opts: {
           outcome: text,
         };
         void appendRunRecord(record);
-        return { text, sessionId: `openai-${chatId}` };
+        return incompleteReview
+          ? { text, incomplete: true }
+          : { text, sessionId: `openai-${chatId}` };
       }
       const outputs = [];
       for (const call of calls) {

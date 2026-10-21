@@ -13,6 +13,13 @@ repeat the same Notion reads with `query-recent`, `streaks`, or per-lift
 `onerm`/`suggest` calls. Run extra analysis only when the user asks for trends or
 coaching beyond the card.
 
+When the application supplies `PRECOMPUTED_RECORD_DATA_JSON` for a bare
+`/progress`, the data has already been read. Review those stated windows directly
+with the known profile and coaching voice; do not fetch records again, render a
+chart, or save anything. Respect coverage warnings and unknown values. The best
+sets are records within those windows, not all-time personal records or proof of
+a stall. Deeper questions still follow the analysis steps below.
+
 ## 1. Pull the data
 
 - Decide the window from the request (this week, last month, or a sensible default like the last 4 weeks).

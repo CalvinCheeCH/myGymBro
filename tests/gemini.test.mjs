@@ -609,3 +609,70 @@ test("runGeminiAgent: concurrent quota cooldown is honored between completed too
   assert.equal(generationCalls.length, 2);
   assert.equal(toolCalls.length, 1);
 });
+
+test("runGeminiAgent: precomputed reviews use one text generation with tools disabled and preserve follow-up history", async () => {
+  steps = [answer("Two logged training days. Keep your next session consistent.")];
+  const response = await run({
+    userMessage: "/progress\nSaved facts: two training days.",
+    toolsEnabled: false,
+  });
+  assert.match(response.text, /Two logged training days/);
+  assert.equal(generationCalls.length, 1);
+  assert.equal(toolCalls.length, 0);
+  assert.equal(generationCalls[0].config.toolConfig.functionCallingConfig.mode, "NONE");
+  assert.match(generationCalls[0].config.systemInstruction, /read-only coaching review/);
+  assert.match(generationCalls[0].contents.at(-1).parts[0].text, /Saved facts: two training days/);
+  steps = [answer("Use the same load again.")];
+  await run({ userMessage: "What load next?" });
+  const next = generationCalls.at(-1);
+  assert.equal(next.config.toolConfig, undefined);
+  assert.ok(
+    next.contents.some((entry) =>
+      entry.parts.some((part) => part.text?.includes("Two logged training days")),
+    ),
+  );
+});
+
+test("runGeminiAgent: a provider tool call during a precomputed review never executes or leaves an orphaned call", async () => {
+  steps = [savedMealCall()];
+  const response = await run({ toolsEnabled: false });
+  assert.equal(response.incomplete, true);
+  assert.match(response.text, /couldn't finish the coaching review/);
+  assert.equal(generationCalls.length, 1);
+  assert.equal(toolCalls.length, 0);
+  steps = [answer("Ready for your next question.")];
+  await run();
+  assert.ok(
+    generationCalls
+      .at(-1)
+      .contents.every((entry) =>
+        entry.parts.every((part) => !part.functionCall && !part.functionResponse),
+      ),
+  );
+});
+
+test("runGeminiAgent: precomputed reviews retain quota failover without re-enabling tools", async () => {
+  testConfig.geminiHeavyModels.push(`gemini-case-${caseId}-fallback`);
+  steps = [quota(20), answer("Keep the next session consistent.")];
+  const response = await run({ toolsEnabled: false });
+  assert.match(response.text, /Keep the next session/);
+  assert.equal(generationCalls.length, 2);
+  assert.ok(
+    generationCalls.every((call) => call.config.toolConfig.functionCallingConfig.mode === "NONE"),
+  );
+  assert.equal(toolCalls.length, 0);
+  assert.equal(waits().length, 0);
+});
+
+test("runGeminiAgent: cutoff precomputed reviews are incomplete while normal reply behavior is preserved", async () => {
+  const partial = answer("A cut-off coaching paragraph");
+  partial.candidates[0].finishReason = "MAX_TOKENS";
+  steps = [partial];
+  const review = await run({ toolsEnabled: false });
+  assert.equal(review.incomplete, true);
+  assert.match(review.text, /couldn't finish the coaching review/);
+  steps = [partial];
+  const normal = await run();
+  assert.equal(normal.incomplete, undefined);
+  assert.equal(normal.text, "A cut-off coaching paragraph");
+});

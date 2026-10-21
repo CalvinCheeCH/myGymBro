@@ -205,7 +205,10 @@ average weekly set totals, so different month lengths do not dominate the compar
 
 Report commands calculate their training summaries without an AI call. Charts are
 rendered through QuickChart. Ask <code>/progress</code> separately for an AI-written
-review of your available records, including broader context when you have logged it.
+review. The bare command reads your workouts once, then coaches you on the latest
+28 days against the preceding 28, without generating charts or repeating lookups.
+Add a question, such as <code>/progress why has my bench stalled?</code>, for deeper
+analysis using the regular coaching tools.
 
 ## Training math with a reason behind the number
 
@@ -482,7 +485,9 @@ Send these commands in your private Telegram chat with the bot:
 - `/today`: see today's saved session with Start/Change buttons, or choose a focus
   for a recommendation when no clear saved session is available.
 - `/plan`: build a weekly training plan and save it to Notion.
-- `/progress`: get a written review of your recorded workouts.
+- `/progress`: get a coached review of the latest 28 days against the preceding 28.
+  Workouts are read once; the coach interprets the recorded facts without extra tools.
+  Add a question for deeper analysis.
 - `/report`: send this week's training report card, with a comparison against the same
   days last week when records are available. No AI call.
 - `/report monthly`: compare the latest completed month with the preceding month when

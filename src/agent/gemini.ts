@@ -21,11 +21,13 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import type { FunctionCallingConfigMode } from "@google/genai";
 import { QUICK_CHOICE_INSTRUCTIONS } from "../channel/quick-choices.js";
 import { config, pickEngine } from "../config.js";
 import type { Attachment } from "../media/attachments.js";
 import { measureTiming, recordTiming } from "../util/timing.js";
 import { personaSystemPrompt, pickPersonality } from "./personalities.js";
+import { PRECOMPUTED_REVIEW_FAILURE, PRECOMPUTED_REVIEW_INSTRUCTIONS } from "./review-mode.js";
 import { type RunRecord, appendRunRecord, summariseUsage } from "./runlog.js";
 import { PROJECT_ROOT, SCRIPT_NAMES, executeCoachTool } from "./tooling.js";
 
@@ -620,6 +622,7 @@ export async function runGeminiAgent(opts: {
   modelTier?: "fast" | "standard";
   attachments?: Attachment[];
   onProgress?: (text: string) => void;
+  toolsEnabled?: boolean;
 }): Promise<AgentResponse> {
   const { userMessage, chatId, userLabel, attachments, onProgress } = opts;
   const modelTier = opts.modelTier ?? "standard";
@@ -646,7 +649,12 @@ export async function runGeminiAgent(opts: {
   let totalRequests = 0;
   const toolCounts: Record<string, number> = {};
   const promptStartedAt = performance.now();
-  const systemPrompt = buildSystemPrompt(chatId, modelTier);
+  const systemPrompt = [
+    buildSystemPrompt(chatId, modelTier),
+    opts.toolsEnabled === false ? PRECOMPUTED_REVIEW_INSTRUCTIONS : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   recordTiming("prompt_preparation", performance.now() - promptStartedAt);
 
   const priorHistory = getHistory(chatId) ?? [];
@@ -766,6 +774,13 @@ export async function runGeminiAgent(opts: {
               config: {
                 systemInstruction: systemPrompt,
                 tools: [{ functionDeclarations: WORKSPACE_DECLARATIONS }],
+                ...(opts.toolsEnabled === false
+                  ? {
+                      toolConfig: {
+                        functionCallingConfig: { mode: "NONE" as FunctionCallingConfigMode },
+                      },
+                    }
+                  : {}),
                 temperature: 0.7,
                 ...options,
               },
@@ -789,6 +804,10 @@ export async function runGeminiAgent(opts: {
             args?: Record<string, unknown>;
           }>;
           const text = responseText(response);
+          const finishReason = response?.candidates?.[0]?.finishReason;
+          if (opts.toolsEnabled === false && finishReason && finishReason !== "STOP") {
+            return incompleteReply(PRECOMPUTED_REVIEW_FAILURE, "incomplete_review", model);
+          }
 
           if (!calls.length) {
             history.push({ role: "model", parts: modelParts.length ? modelParts : [{ text }] });
@@ -816,6 +835,10 @@ export async function runGeminiAgent(opts: {
             void appendRunRecord(record);
             rememberGoodModel(modelTier, model);
             return { text, sessionId: `gemini-${chatId}` };
+          }
+
+          if (opts.toolsEnabled === false) {
+            return incompleteReply(PRECOMPUTED_REVIEW_FAILURE, "unexpected_tool_call", model);
           }
 
           // Model wants tools: replay its exact parts, execute the calls, feed

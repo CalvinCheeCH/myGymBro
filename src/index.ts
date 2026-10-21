@@ -44,6 +44,7 @@ import { checkClaudeAuth, config } from "./config.js";
 import { type Attachment, isSupportedAttachment } from "./media/attachments.js";
 import { transcribeAudio, transcriptionAvailable, warmupTranscriber } from "./media/transcribe.js";
 import { readFoodLibrary } from "./notion/food-library.js";
+import { readProgressReview } from "./notion/progress.js";
 import {
   flushVisualRefreshes,
   isVisualRefreshPaused,
@@ -863,6 +864,52 @@ bot.on("message", async (ctx) => {
     // /stats answers from the run log alone, with no agent call behind it.
     if (cmd === "stats") {
       await replyTo(buildStatsReply());
+      return;
+    }
+
+    if (cmd === "progress" && !rest && !ctx.message.photo && !ctx.message.document) {
+      flushBufferedAlbums(chatId);
+      const isCurrentQuestion = quickChoices.begin(chatId, userId);
+      void ctx.replyWithChatAction("typing").catch(() => {});
+      try {
+        await admitChatRun(chatId, async () => {
+          if (activeDataResets.has(chatId) || isVisualRefreshPaused()) {
+            await replyTo("Workspace reset is in progress. Try /progress when it finishes.");
+            return;
+          }
+          const review = await readProgressReview();
+          if (activeDataResets.has(chatId) || isVisualRefreshPaused()) {
+            await replyTo("Workspace reset is in progress. Try /progress when it finishes.");
+            return;
+          }
+          if (!review.prompt) {
+            await replyTo(review.text);
+            return;
+          }
+          let text = `${review.text}\n\nThe coaching review couldn't finish. These are the recorded facts; try /progress again for coaching.`;
+          try {
+            const response = await measureTiming("agent", () =>
+              runAgent({
+                userMessage: review.prompt!,
+                chatId,
+                userLabel,
+                modelTier: "standard",
+                toolsEnabled: false,
+              }),
+            );
+            if (!response.incomplete && response.text.trim()) text = response.text;
+          } catch {
+            console.warn("[progress] Coaching review unavailable; showing recorded facts.");
+          }
+          await replyTo(isCurrentQuestion() ? text : parseQuickChoices(text).text);
+        });
+      } catch (error) {
+        await replyTo(
+          error instanceof QueueFullError
+            ? error.message
+            : "I couldn't finish your progress review. Try /progress again.",
+        );
+      }
       return;
     }
 

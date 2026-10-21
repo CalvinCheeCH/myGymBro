@@ -38,6 +38,11 @@ let sendWork = async () => {};
 let typingWork = async () => {};
 let libraryWork = async () => "**Food Library**\nSynthetic food";
 let libraryReads = 0;
+let progressReads = 0;
+let progressWork = async () => ({
+  text: "Synthetic recorded training",
+  prompt: "Precomputed synthetic progress facts.",
+});
 let downloadWork = async () => new Uint8Array([1, 2, 3]).buffer;
 let savedLedgers = {};
 let archived = 0;
@@ -176,6 +181,12 @@ moduleMock("notion/food-library", {
     return await libraryWork();
   },
 });
+moduleMock("notion/progress", {
+  readProgressReview: async () => {
+    progressReads++;
+    return await progressWork();
+  },
+});
 moduleMock("notion/status", { notionConfigured: () => false });
 moduleMock("scheduler/scheduler", { initScheduler: async () => {} });
 moduleMock("scheduler/server", { startSchedulerServer: noop });
@@ -252,6 +263,11 @@ const resetWork = () => {
   sendWork = async () => {};
   typingWork = async () => {};
   libraryReads = 0;
+  progressReads = 0;
+  progressWork = async () => ({
+    text: "Synthetic recorded training",
+    prompt: "Precomputed synthetic progress facts.",
+  });
   libraryWork = async () => "**Food Library**\nSynthetic food";
   downloadWork = async () => new Uint8Array([1, 2, 3]).buffer;
 };
@@ -565,4 +581,103 @@ test("real foodlib questions and attached label photos retain the coaching path"
   assert.equal(libraryReads, 0);
   assert.equal(models.length, 2);
   assert.equal(models[1].attachments.length, 1);
+});
+
+test("real bare progress command prefetches once and keeps one tool-disabled coaching review", async () => {
+  resetWork();
+  await dispatch("42", "/progress@SyntheticBot");
+  assert.equal(progressReads, 1);
+  assert.equal(models.length, 1);
+  assert.equal(models[0].toolsEnabled, false);
+  assert.equal(models[0].userMessage, "Precomputed synthetic progress facts.");
+  assert.equal(models[0].modelTier, "standard");
+});
+
+test("real progress waits for an accepted save while commands remain responsive", async () => {
+  resetWork();
+  const save = deferred();
+  modelWork = async (call) => {
+    if (call.userMessage === "bench 60x12") await save.promise;
+  };
+  await dispatch("42", "bench 60x12");
+  await until(() => models.length === 1);
+  const review = dispatch("42", "/progress");
+  await settle();
+  assert.equal(progressReads, 0);
+  await dispatch("42", "/commands");
+  assert.ok(replies.some((reply) => reply.text.startsWith("**Bot Commands**")));
+  save.resolve();
+  await review;
+  await drainChatRuns();
+  assert.equal(progressReads, 1);
+  assert.equal(models.length, 2);
+  assert.equal(models[1].toolsEnabled, false);
+});
+
+test("real progress flushes a buffered workout photo before reading progress facts", async () => {
+  resetWork();
+  await dispatch("42", "", {
+    text: undefined,
+    caption: "Workout log photo",
+    photo: photo(),
+    media_group_id: "progress-album",
+  });
+  const readOrder = [];
+  modelWork = async (call) => {
+    if (call.attachments?.length) readOrder.push("photo saved");
+  };
+  progressWork = async () => {
+    readOrder.push("facts read");
+    return { text: "Recorded facts.", prompt: "Precomputed synthetic progress facts." };
+  };
+  await dispatch("42", "/progress");
+  await drainChatRuns();
+  fireAlbumTimers();
+  assert.deepEqual(readOrder, ["photo saved", "facts read"]);
+  assert.equal(models.length, 2);
+  assert.equal(models[1].toolsEnabled, false);
+});
+
+test("real progress shows factual results when coaching is incomplete or fails", async () => {
+  for (const outcome of ["incomplete", "throws"]) {
+    resetWork();
+    modelWork = async () => {
+      if (outcome === "throws") throw new Error("private-failure-fixture");
+      return { text: "Not finished.", incomplete: true };
+    };
+    await dispatch("42", "/progress");
+    assert.equal(models.length, 1);
+    assert.ok(replies.some((reply) => reply.text.includes("Synthetic recorded training")));
+    assert.ok(replies.some((reply) => reply.text.includes("coaching review couldn't finish")));
+    assert.ok(replies.every((reply) => !reply.text.includes("private-failure-fixture")));
+  }
+});
+
+test("real progress does not ask the model to analyze empty or unavailable records", async () => {
+  resetWork();
+  progressWork = async () => ({ text: "No recognizable recorded sets in this window." });
+  await dispatch("42", "/progress");
+  assert.equal(progressReads, 1);
+  assert.equal(models.length, 0);
+  assert.ok(replies.some((reply) => reply.text.includes("No recognizable recorded sets")));
+});
+
+test("real progress questions and attached photos retain normal coaching tools", async () => {
+  resetWork();
+  await dispatch("42", "/progress why did my bench stall?");
+  await dispatch("42", "/progress", { photo: photo() });
+  assert.equal(progressReads, 0);
+  assert.equal(models.length, 2);
+  assert.equal(models[0].toolsEnabled, undefined);
+  assert.equal(models[1].toolsEnabled, undefined);
+  assert.equal(models[1].attachments.length, 1);
+});
+
+test("real progress retains private authorization before reading any records", async () => {
+  resetWork();
+  await dispatch("41", "/progress");
+  await dispatch("42", "/progress", { chat: { id: 42, type: "group" } });
+  assert.equal(progressReads, 0);
+  assert.equal(models.length, 0);
+  assert.equal(replies.length, 0);
 });
