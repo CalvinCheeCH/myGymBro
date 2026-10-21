@@ -89,6 +89,11 @@ guess anyway. Saved Food Library entries and readable label values take preceden
 over fresh estimates and are scaled to the servings you report. Unclear food names or
 portions may need clarification; no worldwide food coverage or accuracy is promised.
 
+Bare `/foodlib` reads up to 50 saved foods A–Z directly from Notion, without
+calling an AI provider. Each entry shows its stored serving, category, calories
+and protein; missing values stay unknown. Food questions with extra instructions
+still use the coach.
+
 ## Exercise database
 
 The `find-exercises` skill pulls real movements from the free, keyless

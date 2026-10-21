@@ -165,9 +165,10 @@ serving is unclear, the coach asks for clarification.
 A saved estimate is still an estimate. You can correct serving values for future
 lookups; previous meal records keep the values saved with them.
 
-Browse with <code>/foodlib</code>, which currently shows up to 50 foods alphabetically.
-It uses your selected AI provider to format the lookup. Several food labels can also
-be sent in one album with a caption identifying each item.
+Browse with <code>/foodlib</code> to read up to 50 saved foods alphabetically, with
+servings, category, calories, and protein. The bare command reads Notion directly,
+with no AI call. Detailed food questions still use your selected coach. Several
+food labels can also be sent in one album with a caption identifying each item.
 
 **The payoff:** less repeated nutrition entry, a consistent reference for repeat foods,
 and serving-based logging you can check yourself. Connected Notion is required to
@@ -486,7 +487,8 @@ Send these commands in your private Telegram chat with the bot:
   days last week when records are available. No AI call.
 - `/report monthly`: compare the latest completed month with the preceding month when
   records are available. No AI call. Other `/report` arguments are not supported.
-- `/foodlib`: list saved foods with their category, protein, and calories.
+- `/foodlib`: browse saved foods with their serving, category, protein, and calories.
+  No AI call for the bare command.
 - `/stats`: show the last seven days of bot usage, errors, and response times. No AI call.
 - `/new` or `/reset`: start a fresh conversation and clear active workout context.
   Your saved Notion records, Telegram messages, and selected persona remain.

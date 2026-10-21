@@ -47,6 +47,11 @@ for storage, retention, and deletion boundaries.
 Run `npm run timings` from the project folder after sending a Telegram query to
 inspect the latest completed request. No AI call is made by this command.
 
+Bare `/foodlib` reads the saved library directly. Its trace contains a
+`notion_read` span and Telegram delivery, with no agent or model requests.
+The read has a ten-second timeout; Notion or network failures return a retry
+message. Requests with extra questions still use the coach.
+
 Private JSONL records are written to `./data/response-timings.jsonl`; set
 `RESPONSE_TIMING_FILE` to use another location. Each update gets a random local
 request ID. Records contain numeric stage durations, fixed operation names,

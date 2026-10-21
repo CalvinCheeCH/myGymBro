@@ -43,6 +43,7 @@ import { registerTelegramWebhook, startWebhookServer } from "./channel/webhook-s
 import { checkClaudeAuth, config } from "./config.js";
 import { type Attachment, isSupportedAttachment } from "./media/attachments.js";
 import { transcribeAudio, transcriptionAvailable, warmupTranscriber } from "./media/transcribe.js";
+import { readFoodLibrary } from "./notion/food-library.js";
 import {
   flushVisualRefreshes,
   isVisualRefreshPaused,
@@ -95,8 +96,7 @@ function admitChatRun<T>(chatId: string, task: () => Promise<T>, releaseIntake =
 
 // ─── Command shortcuts ───────────────────────────────────────────────
 //
-// Slash commands map to natural-language prompts so the agent handles them with the
-// same skills as a free-text message.
+// Coaching commands map to prompts; saved-data commands use direct reads.
 
 const COMMAND_PROMPTS: Record<string, string> = {
   start:
@@ -126,7 +126,7 @@ const BOT_COMMANDS: Array<{ cmd: string; desc: string }> = [
   { cmd: "/plan", desc: "build next week's plan to Notion" },
   { cmd: "/progress", desc: "progress report from your logs" },
   { cmd: "/report", desc: "weekly report card (/report monthly for monthly)" },
-  { cmd: "/foodlib", desc: "table of everything in your Food Library" },
+  { cmd: "/foodlib", desc: "browse saved foods and servings (no AI call)" },
   { cmd: "/stats", desc: "bot usage, last 7 days (no AI call)" },
   { cmd: "/new", desc: "clear chat, start fresh (/reset works too)" },
   { cmd: "/resetdata", desc: "preview and clear workout data and weekly plans (keeps libraries)" },
@@ -863,6 +863,14 @@ bot.on("message", async (ctx) => {
     // /stats answers from the run log alone, with no agent call behind it.
     if (cmd === "stats") {
       await replyTo(buildStatsReply());
+      return;
+    }
+
+    if (cmd === "foodlib" && !rest && !ctx.message.photo && !ctx.message.document) {
+      void ctx.replyWithChatAction("typing").catch(() => {});
+      const library = readFoodLibrary();
+      releaseChatIntake();
+      await replyTo(await library);
       return;
     }
 

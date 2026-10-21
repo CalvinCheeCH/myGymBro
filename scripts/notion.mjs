@@ -957,16 +957,34 @@ async function cmdLookup(args) {
     ...(sorts ? { sorts } : {}),
     page_size: limit,
   });
-  if (!res.results?.length) {
-    console.log(`No rows in ${args.db} (${label}).`);
-    return;
-  }
   const titleProp = Object.keys(schema).find((k) => schema[k].type === "title");
   const numProps = Object.keys(schema).filter((k) => schema[k].type === "number");
   const selProps = Object.keys(schema).filter(
     (k) => schema[k].type === "select" || schema[k].type === "status",
   );
   const servingProp = Object.keys(schema).find((k) => k.toLowerCase().includes("serving"));
+  if (args.json) {
+    const rows = (res.results ?? [])
+      .filter((page) => !page.archived && !page.in_trash)
+      .map((page) => {
+        const props = page.properties ?? {};
+        return {
+          name: readProp(titleProp ? props[titleProp] : null),
+          serving: readProp(servingProp ? props[servingProp] : null),
+          properties: Object.fromEntries(
+            [...numProps, ...selProps]
+              .map((name) => [name, readProp(props[name])])
+              .filter(([, value]) => value !== ""),
+          ),
+        };
+      });
+    console.log(JSON.stringify({ rows, hasMore: Boolean(res.has_more) }));
+    return;
+  }
+  if (!res.results?.length) {
+    console.log(`No rows in ${args.db} (${label}).`);
+    return;
+  }
   for (const page of res.results) {
     const p = page.properties ?? {};
     const title = readProp(titleProp ? p[titleProp] : null);
@@ -2584,6 +2602,7 @@ export {
   notion,
   buildTextFilter,
   buildLookupQuery,
+  cmdLookup,
   renderThisWeekTile,
   renderNextSessionTile,
   renderGoalsTile,

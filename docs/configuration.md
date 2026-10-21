@@ -42,7 +42,10 @@ default. See the official [conversation state guide](https://developers.openai.c
 
 Both settings must be positive whole milliseconds, no greater than `2147483647`.
 Model discovery has a five-second cap or the remaining budget, whichever is
-shorter. Interactive SDK retries are disabled; the bot owns retry/fallback timing.
+shorter. The SDK advertises at least a ten-second server deadline to satisfy
+Gemini, while a separate local cancellation signal still enforces any shorter
+configured or remaining time limit. Interactive SDK retries are disabled; the
+bot owns retry/fallback timing.
 Scheduled tasks keep their existing policy.
 
 A running workspace save is allowed to finish even if it crosses the response

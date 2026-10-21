@@ -135,7 +135,7 @@ const assertDeadline = (args, timeout) => {
     args.config.abortSignal instanceof AbortSignal,
     "SDK must receive a cancellable signal",
   );
-  assert.equal(args.config.httpOptions.timeout, timeout);
+  assert.equal(args.config.httpOptions.timeout, Math.max(10_000, timeout));
   assert.equal(
     args.config.httpOptions.retryOptions.attempts,
     1,
@@ -358,13 +358,75 @@ test("Gemini scheduled tasks retain unrestricted model and tool durations", asyn
   }
 });
 
-test("Gemini configurable request timeout and response budget are passed as milliseconds", async () => {
+test("Gemini configured sub-10s requests advertise a valid server deadline and still abort at the configured millisecond limit", async () => {
   testConfig.geminiRequestTimeoutMs = 1250;
   testConfig.geminiResponseTimeoutMs = 3000;
-  steps = [answer()];
-  assert.equal((await run()).text, "Ready.");
+  const entered = deferred();
+  steps = [
+    (args) => {
+      entered.resolve();
+      return waitForAbort(args.config.abortSignal);
+    },
+  ];
+  const startedAt = Date.now();
+  const pending = run();
+  await entered.promise;
   assertDeadline(discoveryCalls[0], 1250);
   assertDeadline(generationCalls[0], 1250);
+  assert.equal(generationCalls[0].config.httpOptions.timeout, 10_000);
+  timerContext.mock.timers.tick(1249);
+  assert.equal(generationCalls[0].config.abortSignal.aborted, false);
+  timerContext.mock.timers.tick(1);
+  const result = await pending;
+  assert.equal(result.incomplete, true);
+  assert.match(result.text, /time limit/i);
+  assert.equal(Date.now() - startedAt, 1250);
+  assert.equal(generationCalls[0].config.abortSignal.aborted, true);
+  assert.equal(waits().length, 0);
+});
+
+test("Gemini final fallback with 6s remaining advertises 10s but keeps the total response budget and completed save", async () => {
+  testConfig.geminiResponseTimeoutMs = 44_000;
+  testConfig.geminiHeavyModels.push(
+    `gemini-deadline-${caseId}-second`,
+    `gemini-deadline-${caseId}-third`,
+  );
+  const entered = deferred();
+  const serverDeadline = () => {
+    timerContext.mock.timers.tick(19_000);
+    throw new Error("504 DEADLINE_EXCEEDED: Deadline expired before operation could complete.");
+  };
+  steps = [
+    toolResponse(),
+    serverDeadline,
+    serverDeadline,
+    (args) => {
+      entered.resolve();
+      return waitForAbort(args.config.abortSignal);
+    },
+  ];
+  const startedAt = Date.now();
+  const pending = run();
+  await entered.promise;
+  assert.equal(generationCalls.length, 4);
+  const lastRequest = generationCalls.at(-1);
+  assert.equal(lastRequest.config.httpOptions.timeout, 10_000);
+  assert.equal(toolCalls.length, 1);
+  assert.deepEqual(lastRequest.contents.at(-1).parts[0].functionResponse.response, {
+    saved: true,
+    totalCalories: 370,
+  });
+  timerContext.mock.timers.tick(5999);
+  assert.equal(lastRequest.config.abortSignal.aborted, false);
+  timerContext.mock.timers.tick(1);
+  const result = await pending;
+  assert.equal(result.incomplete, true);
+  assert.match(result.text, /time limit/i);
+  assert.equal(Date.now() - startedAt, 44_000);
+  assert.equal(lastRequest.config.abortSignal.aborted, true);
+  assert.equal(toolCalls.length, 1, "a failover must reuse the completed save");
+  assert.equal(generationCalls.length, 4);
+  assert.equal(waits().length, 0);
 });
 
 test("Gemini discovery iterator has a deadline and falls back to configured models", async () => {

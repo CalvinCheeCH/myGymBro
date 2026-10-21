@@ -36,6 +36,8 @@ const mutations = [];
 let modelWork = async () => {};
 let sendWork = async () => {};
 let typingWork = async () => {};
+let libraryWork = async () => "**Food Library**\nSynthetic food";
+let libraryReads = 0;
 let downloadWork = async () => new Uint8Array([1, 2, 3]).buffer;
 let savedLedgers = {};
 let archived = 0;
@@ -168,6 +170,12 @@ moduleMock("notion/reset", {
     };
   },
 });
+moduleMock("notion/food-library", {
+  readFoodLibrary: async () => {
+    libraryReads++;
+    return await libraryWork();
+  },
+});
 moduleMock("notion/status", { notionConfigured: () => false });
 moduleMock("scheduler/scheduler", { initScheduler: async () => {} });
 moduleMock("scheduler/server", { startSchedulerServer: noop });
@@ -243,6 +251,8 @@ const resetWork = () => {
   modelWork = async () => {};
   sendWork = async () => {};
   typingWork = async () => {};
+  libraryReads = 0;
+  libraryWork = async () => "**Food Library**\nSynthetic food";
   downloadWork = async () => new Uint8Array([1, 2, 3]).buffer;
 };
 
@@ -517,4 +527,42 @@ test("real incomplete done blocks the next set until reply cleanup settles and p
   assert.equal(retained.entries.length, 2);
   assert.match(JSON.stringify(retained), /bench/);
   assert.match(JSON.stringify(retained), /row/);
+});
+
+test("real bare foodlib command reads the saved library directly without a model or media work", async () => {
+  resetWork();
+  typingWork = () => new Promise(() => {});
+  downloadWork = () => {
+    throw new Error("No media work expected");
+  };
+  await dispatch("42", "/foodlib@SyntheticBot");
+  assert.equal(libraryReads, 1);
+  assert.equal(models.length, 0);
+  assert.ok(replies.some((reply) => reply.text.includes("Synthetic food")));
+});
+
+test("real slow foodlib read releases intake so commands remain responsive", async () => {
+  resetWork();
+  const lookup = deferred();
+  libraryWork = () => lookup.promise;
+  const request = dispatch("42", "/foodlib");
+  await until(() => libraryReads === 1);
+  await dispatch("42", "/commands");
+  assert.ok(replies.some((reply) => reply.text.startsWith("**Bot Commands**")));
+  assert.equal(models.length, 0);
+  lookup.resolve("**Food Library**\nLookup finished.");
+  await request;
+  assert.ok(replies.some((reply) => reply.text.includes("Lookup finished.")));
+});
+
+test("real foodlib questions and attached label photos retain the coaching path", async () => {
+  resetWork();
+  await dispatch("42", "/foodlib which food has the most protein?");
+  assert.equal(libraryReads, 0);
+  assert.equal(models.length, 1);
+  assert.match(models[0].userMessage, /which food has the most protein/);
+  await dispatch("42", "/foodlib", { photo: photo() });
+  assert.equal(libraryReads, 0);
+  assert.equal(models.length, 2);
+  assert.equal(models[1].attachments.length, 1);
 });

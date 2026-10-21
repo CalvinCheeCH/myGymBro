@@ -425,7 +425,8 @@ async function withRequestDeadline<T>(
   try {
     const result = await task({
       abortSignal: controller.signal,
-      httpOptions: { timeout: timeoutMs, retryOptions: { attempts: 1 } },
+      // Gemini requires a 10s server deadline; the local signal still aborts sooner.
+      httpOptions: { timeout: Math.max(10_000, timeoutMs), retryOptions: { attempts: 1 } },
     });
     if (controller.signal.aborted) throw new GeminiRequestTimeoutError();
     return result;
