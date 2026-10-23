@@ -58,6 +58,11 @@ tool calls for this command; retries and fallback can add requests. The read
 has a 15-second timeout and is ordered after accepted workout saves. Extra
 questions use the regular agent path.
 
+If the progress lookup fails before coaching starts, the console logs a fixed
+reason code: `NOTION_<status>`, `TIMEOUT`, `OUTPUT_LIMIT`, `HELPER_FAILED`,
+`READ_FAILED`, or `INVALID_RESPONSE`. These messages omit record contents,
+request paths, credentials and raw server errors.
+
 Private JSONL records are written to `./data/response-timings.jsonl`; set
 `RESPONSE_TIMING_FILE` to use another location. Each update gets a random local
 request ID. Records contain numeric stage durations, fixed operation names,

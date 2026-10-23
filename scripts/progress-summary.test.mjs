@@ -13,6 +13,7 @@ let activeReads;
 let maxActiveReads;
 let bodyFailure;
 let useRealBodyReader;
+let useRealQuery;
 mock.module("./notion.mjs", {
   namedExports: {
     ...actual,
@@ -25,6 +26,7 @@ mock.module("./notion.mjs", {
       if (pathname === "/databases/workout-db") return { properties: schema };
       assert.equal(pathname, "/databases/workout-db/query");
       assert.equal(method, "POST");
+      if (useRealQuery) return actual.notion(pathname, method, body);
       const page = queryPages.shift();
       if (page instanceof Error) throw page;
       assert.ok(page, "Unexpected extra query");
@@ -45,7 +47,9 @@ mock.module("./notion.mjs", {
     },
   },
 });
-const { buildProgressSummary, fetchProgressSummary } = await import("./progress-summary.mjs");
+const { buildProgressSummary, fetchProgressSummary, progressReadErrorCode } = await import(
+  "./progress-summary.mjs"
+);
 const row = (date, body, endDate = null) => ({ date, body, endDate });
 const page = (id, date = "2026-10-21", status = "Done", extra = {}) => ({
   id,
@@ -59,7 +63,13 @@ const bench = "## Bench\n- 60kg x 8 x 3";
 const dataPage = (results, extra = {}) => ({ results, has_more: false, ...extra });
 
 beforeEach(() => {
-  schema = { "Training date": { type: "date" }, "Session status": { type: "status" } };
+  schema = {
+    "Training date": { type: "date" },
+    "Session status": {
+      type: "status",
+      status: { options: ["Done", "Planned", "Skipped"].map((name) => ({ name })) },
+    },
+  };
   queryPages = [];
   bodies = new Map();
   requests = [];
@@ -68,6 +78,7 @@ beforeEach(() => {
   maxActiveReads = 0;
   bodyFailure = undefined;
   useRealBodyReader = false;
+  useRealQuery = false;
 });
 
 test("summary declares two exact 28-day windows with empty logs and validates calendar dates", () => {
@@ -299,7 +310,13 @@ test("real body pagination errors fail the whole summary instead of publishing p
 });
 
 test("status properties can be renamed and duplicate pagination rows are read once", async () => {
-  schema = { "Training date": { type: "date" }, State: { type: "status" } };
+  schema = {
+    "Training date": { type: "date" },
+    State: {
+      type: "status",
+      status: { options: ["Done", "Planned", "Skipped"].map((name) => ({ name })) },
+    },
+  };
   const renamed = (id, status) => {
     const result = page(id);
     result.properties.State = { type: "status", status: { name: status } };
@@ -317,6 +334,79 @@ test("status properties can be renamed and duplicate pagination rows are read on
     property: "State",
     status: { does_not_equal: "Planned" },
   });
+});
+
+test("select status filters use only existing options, including a workspace with no Planned option", async (t) => {
+  schema["Session status"] = {
+    type: "select",
+    select: { options: ["Completed", "Partial", "Skipped"].map((name) => ({ name })) },
+  };
+  useRealQuery = true;
+  const rows = ["Completed", "Partial", "Skipped"].map((name) => {
+    const result = page(name.toLowerCase());
+    result.properties["Session status"] = { type: "select", select: { name } };
+    return result;
+  });
+  let sentQuery;
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    assert.equal(new URL(url).pathname, "/v1/databases/workout-db/query");
+    sentQuery = JSON.parse(options.body);
+    const validOptions = schema["Session status"].select.options.map((option) => option.name);
+    for (const filter of sentQuery.filter.and) {
+      if (filter.select && !validOptions.includes(filter.select.does_not_equal)) {
+        return Response.json(
+          { message: "Unknown select option in query filter." },
+          { status: 400 },
+        );
+      }
+    }
+    return Response.json(dataPage(rows));
+  });
+  bodies.set("completed", bench);
+  bodies.set("partial", bench);
+  const result = await fetchProgressSummary({ date: "2026-10-21" });
+  assert.equal(result.window.loggedSets, 6);
+  assert.deepEqual(reads.sort(), ["completed", "partial"]);
+  assert.deepEqual(sentQuery.filter.and.slice(2), [
+    { property: "Session status", select: { does_not_equal: "Skipped" } },
+  ]);
+});
+
+test("status exclusion matches case insensitively while preserving the stored option names", async () => {
+  schema["Session status"].status.options = ["Completed", "planned", "sKiPpEd"].map((name) => ({
+    name,
+  }));
+  queryPages = [dataPage([page("complete", "2026-10-21", "Completed")])];
+  bodies.set("complete", bench);
+  await fetchProgressSummary({ date: "2026-10-21" });
+  assert.deepEqual(requests[1].body.filter.and.slice(2), [
+    { property: "Session status", status: { does_not_equal: "planned" } },
+    { property: "Session status", status: { does_not_equal: "sKiPpEd" } },
+  ]);
+});
+
+test("missing option metadata or no excluded options never invent status filters", async () => {
+  for (const definition of [
+    { type: "select" },
+    { type: "status", status: {} },
+    { type: "select", select: { options: [{ name: "Completed" }, { name: "Partial" }] } },
+  ]) {
+    schema["Session status"] = definition;
+    requests = [];
+    reads = [];
+    queryPages = [
+      dataPage([
+        page("complete", "2026-10-21", "Completed"),
+        page("planned", "2026-10-21", "Planned"),
+        page("skipped", "2026-10-21", "Skipped"),
+      ]),
+    ];
+    bodies.set("complete", bench);
+    const result = await fetchProgressSummary({ date: "2026-10-21" });
+    assert.equal(result.window.loggedSets, 3);
+    assert.deepEqual(reads, ["complete"]);
+    assert.equal(requests[1].body.filter.and.length, 2);
+  }
 });
 
 test("legacy weekly titles do not turn undated sets into a Sunday workout", async () => {
@@ -337,4 +427,21 @@ test("legacy weekly titles do not turn undated sets into a Sunday workout", asyn
   assert.deepEqual(result.window.exercises[0].bestSet, { loadKg: 60, reps: 8, date: "2026-10-20" });
   assert.match(result.warnings.join(" "), /without a reliable session date/);
   assert.doesNotMatch(JSON.stringify(result), /private note|Week of|legacy-weekly|dated-weekly/);
+});
+
+test("progress diagnostics expose only an allowlisted HTTP status or a generic failure code", () => {
+  for (const status of [400, 401, 403, 404, 429, 500, 502, 503, 504]) {
+    assert.equal(
+      progressReadErrorCode(new Error(`Notion POST /private-path -> ${status}: private record`)),
+      `NOTION_${status}`,
+    );
+  }
+  for (const error of [
+    new Error("Notion POST /private-path -> 599: private record"),
+    new Error("private notes or credential-like content"),
+    { message: "Notion POST /private-path -> 400: private record" },
+    null,
+  ]) {
+    assert.equal(progressReadErrorCode(error), "READ_FAILED");
+  }
 });

@@ -155,8 +155,12 @@ export async function fetchProgressSummary({ date } = {}) {
     { property: dateProp, date: { on_or_before: today } },
   ];
   if (statusProp) {
-    for (const status of ["Planned", "Skipped"]) {
-      filters.push({ property: statusProp, [schema[statusProp].type]: { does_not_equal: status } });
+    const type = schema[statusProp].type;
+    // Notion rejects filters naming options that do not exist in the workspace.
+    for (const option of schema[statusProp][type]?.options ?? []) {
+      if (typeof option.name === "string" && /^(planned|skipped)$/i.test(option.name)) {
+        filters.push({ property: statusProp, [type]: { does_not_equal: option.name } });
+      }
     }
   }
   const rows = [];
@@ -222,6 +226,14 @@ export async function fetchProgressSummary({ date } = {}) {
   return buildProgressSummary(rows, { date: today, partial });
 }
 
+/** Failure diagnostics contain no request paths, records, tokens or response bodies. */
+export function progressReadErrorCode(error) {
+  const status = / -> (400|401|403|404|429|500|502|503|504):/.exec(
+    error instanceof Error ? error.message : "",
+  )?.[1];
+  return status ? `NOTION_${status}` : "READ_FAILED";
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   if (args.length !== 2 || args[0] !== "--date") {
@@ -230,8 +242,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   } else {
     fetchProgressSummary({ date: args[1] }).then(
       (summary) => console.log(JSON.stringify(summary)),
-      () => {
-        console.error("Progress summary could not be read completely.");
+      (error) => {
+        console.error(`PROGRESS_READ_ERROR ${progressReadErrorCode(error)}`);
         process.exitCode = 1;
       },
     );

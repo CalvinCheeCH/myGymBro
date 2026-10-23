@@ -146,6 +146,7 @@ export async function readProgressReview(now = new Date()): Promise<ProgressRevi
     month: "2-digit",
     day: "2-digit",
   }).format(now);
+  let failureReason = "INVALID_RESPONSE";
   try {
     return await measureTiming("notion_read", async () => {
       const output = await new Promise<string>((resolve, reject) => {
@@ -159,7 +160,21 @@ export async function readProgressReview(now = new Date()): Promise<ProgressRevi
             windowsHide: true,
             encoding: "utf8",
           },
-          (error, stdout) => (error ? reject(error) : resolve(stdout)),
+          (error, stdout, stderr) => {
+            if (!error) {
+              resolve(stdout);
+              return;
+            }
+            failureReason =
+              error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+                ? "OUTPUT_LIMIT"
+                : error.killed
+                  ? "TIMEOUT"
+                  : (/^PROGRESS_READ_ERROR (NOTION_(?:400|401|403|404|429|500|502|503|504)|READ_FAILED)$/m.exec(
+                      stderr,
+                    )?.[1] ?? "HELPER_FAILED");
+            reject(error);
+          },
         );
       });
       let profile = "";
@@ -171,6 +186,7 @@ export async function readProgressReview(now = new Date()): Promise<ProgressRevi
       return prepareProgressReview(JSON.parse(output), profile);
     });
   } catch {
+    console.warn(`[progress] Training lookup failed (${failureReason}).`);
     return {
       text: "I couldn't read enough training records to build your progress review. Try /progress again; if it keeps failing, check the Notion connection and workspace setup.",
     };

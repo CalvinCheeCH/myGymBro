@@ -9,13 +9,16 @@ const config = { notionToken: "synthetic-test-token", timezone: "Asia/Kuala_Lump
 const executions = [];
 let output;
 let failure;
+let stderr = "";
+const warnings = [];
+mock.method(console, "warn", (...args) => warnings.push(args.join(" ")));
 mock.module("../dist/config.js", { namedExports: { config } });
 mock.module("../dist/agent/tooling.js", { namedExports: { PROJECT_ROOT: temporary } });
 mock.module("node:child_process", {
   namedExports: {
     execFile: (file, args, options, callback) => {
       executions.push({ file, args, options });
-      callback(failure, output, "");
+      callback(failure, output, stderr);
     },
   },
 });
@@ -50,6 +53,8 @@ beforeEach(() => {
   executions.length = 0;
   output = JSON.stringify(summary());
   failure = undefined;
+  stderr = "";
+  warnings.length = 0;
   fs.writeFileSync(
     path.join(temporary, "PERSONAL.md"),
     "Goal: get stronger.\nEquipment: dumbbells.",
@@ -170,4 +175,33 @@ test("duration-only training keeps its coached review even without recognizable 
   assert.match(review.text, /Training days: 3/);
   assert.match(review.prompt, /coaching progress review/);
   assert.match(review.prompt, /not session counts/);
+});
+
+test("progress diagnostics log only allowlisted helper failure codes, never stderr or record data", async () => {
+  failure = Object.assign(new Error("private-fixture-path-sensitive-note"), { code: 1 });
+  stderr = "PROGRESS_READ_ERROR NOTION_400\n";
+  await readProgressReview();
+  assert.deepEqual(warnings, ["[progress] Training lookup failed (NOTION_400)."]);
+  warnings.length = 0;
+  stderr = "PROGRESS_READ_ERROR NOTION_400 private-record-text\nsecret-fixture-output";
+  await readProgressReview();
+  assert.deepEqual(warnings, ["[progress] Training lookup failed (HELPER_FAILED)."]);
+});
+
+test("progress diagnostics distinguish timeouts, output limits and malformed responses safely", async () => {
+  failure = Object.assign(new Error("private-fixture-path"), { killed: true });
+  await readProgressReview();
+  assert.deepEqual(warnings, ["[progress] Training lookup failed (TIMEOUT)."]);
+  warnings.length = 0;
+  failure = Object.assign(new Error("private-record-output"), {
+    killed: true,
+    code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+  });
+  await readProgressReview();
+  assert.deepEqual(warnings, ["[progress] Training lookup failed (OUTPUT_LIMIT)."]);
+  warnings.length = 0;
+  failure = undefined;
+  output = "malformed private-record-output";
+  await readProgressReview();
+  assert.deepEqual(warnings, ["[progress] Training lookup failed (INVALID_RESPONSE)."]);
 });
