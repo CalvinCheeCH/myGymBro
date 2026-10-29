@@ -22,9 +22,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { FunctionCallingConfigMode } from "@google/genai";
+import {
+  isModelUnavailableError,
+  isOverloadedError,
+  isPerDayQuota,
+  isQuotaError,
+  parseRetrySeconds,
+} from "../channel/errors.js";
 import { QUICK_CHOICE_INSTRUCTIONS } from "../channel/quick-choices.js";
 import { config, pickEngine } from "../config.js";
 import type { Attachment } from "../media/attachments.js";
+import { humanizeWaitSeconds } from "../util/format.js";
 import { measureTiming, recordTiming } from "../util/timing.js";
 import { personaSystemPrompt, pickPersonality } from "./personalities.js";
 import { PRECOMPUTED_REVIEW_FAILURE, PRECOMPUTED_REVIEW_INSTRUCTIONS } from "./review-mode.js";
@@ -440,30 +448,20 @@ async function withRequestDeadline<T>(
   }
 }
 
-function isQuotaError(msg: string): boolean {
-  return /resource.?exhausted|quota|rate.?limit|\b429\b/i.test(msg);
-}
-
-/** The model id itself is gone or unavailable to this key (404-class). */
-export function isModelUnavailableError(msg: string): boolean {
-  return /\b404\b|not.?found|not_found|no longer available|does not exist/i.test(msg);
-}
-
-/** The model is up but shedding load (503-class, "high demand"). */
-export function isOverloadedError(msg: string): boolean {
-  return /\b503\b|overloaded|high demand|model is currently|unavailable/i.test(msg);
-}
-
-/** A per-day (not per-minute) quota exhaustion: retrying today is pointless. */
-export function isPerDayQuota(msg: string): boolean {
-  return /per[_-]?day|GenerateRequestsPerDay/i.test(msg);
-}
-
 // Models that hit a per-day cap, with the epoch ms when they may be tried
 // again. Persisted so a restart does not re-walk into the same dead model;
 // pruned on load. Per-minute quotas are NOT recorded (the retry window
-// handles those).
+// handles those). The classification predicates and the retry-window parser
+// live in channel/errors.ts; re-exported here for the engine's tests.
 const QUOTA_DEAD_FILE = path.join(PROJECT_ROOT, "data", "gemini-quotas.json");
+
+export {
+  isModelUnavailableError,
+  isOverloadedError,
+  isPerDayQuota,
+  isQuotaError,
+  parseRetrySeconds,
+} from "../channel/errors.js";
 
 function loadQuotaDead(): Record<string, number> {
   try {
@@ -499,18 +497,6 @@ function isTransientError(msg: string): boolean {
   return /etimedout|econnreset|econnrefused|enotfound|eai_again|socket hang up|network|fetch failed|overload|\b50[234]\b|unavailable|timeout/i.test(
     msg,
   );
-}
-
-/** Extract the "retry in Xs"/"retry in Xm Ys" hint from a quota error, if any. */
-export function parseRetrySeconds(msg: string): number | null {
-  const at = msg.search(/retry/i);
-  if (at === -1) return null;
-  const tail = msg.slice(at);
-  // Minute form first ("1m5s"), then bare seconds ("22.496439837s").
-  const minutes = /(\d+)\s*m\s*(\d+(?:\.\d+)?)\s*s/i.exec(tail);
-  if (minutes) return Number(minutes[1]) * 60 + Number(minutes[2]);
-  const seconds = /(\d+(?:\.\d+)?)\s*s\b/i.exec(tail);
-  return seconds ? Number(seconds[1]) : null;
 }
 
 /**
@@ -626,9 +612,17 @@ export async function runGeminiAgent(opts: {
 }): Promise<AgentResponse> {
   const { userMessage, chatId, userLabel, attachments, onProgress } = opts;
   const modelTier = opts.modelTier ?? "standard";
-  // Context-based routing: heavy models coach, plan, advise, and see photos;
-  // light models take quick transactional logs. Attachments always go heavy.
-  // GEMINI_SMART_ROUTING=false pins everything to the heavy chain.
+  // Live status for the host: each failover decision reports one plain display
+  // line (Telegram users see "still working" bullet updates while this walk
+  // grinds on). Best-effort: a status callback must never break the run.
+  const shortModel = (id: string) => id.replace(/^gemini-/, "");
+  const progress = (line: string) => {
+    try {
+      onProgress?.(line);
+    } catch {
+      /* status updates are niceties, not work */
+    }
+  };
   // Context-based routing: heavy models coach, plan, advise, and see photos;
   // light models take quick transactional logs. Attachments always go heavy.
   // GEMINI_SMART_ROUTING=false pins everything to the heavy chain.
@@ -900,6 +894,11 @@ export async function runGeminiAgent(opts: {
         if (interactive && err instanceof GeminiRequestTimeoutError) {
           quotaCooldowns.set(model, Math.max(quotaCooldowns.get(model) ?? 0, Date.now() + 30_000));
           console.warn(`[gemini] ${model} exceeded its request time limit.`);
+          progress(
+            nextModel(model)
+              ? `${shortModel(model)} went quiet past its time limit — trying the next model`
+              : `${shortModel(model)} went quiet past its time limit; nothing else is available`,
+          );
           if (remainingMs() <= 0 || !nextModel(model)) return timeLimitReply(model);
           continue modelLoop;
         }
@@ -917,6 +916,7 @@ export async function runGeminiAgent(opts: {
           }
           const retryS = parseRetrySeconds(msg);
           const waitMs = retryS != null ? Math.ceil(retryS * 1000) + 500 : null;
+          const resetText = humanizeWaitSeconds(retryS);
           if (source === "telegram") {
             quotaCooldowns.set(
               model,
@@ -928,6 +928,11 @@ export async function runGeminiAgent(opts: {
             const next = nextModel(model);
             if (next) {
               console.warn(`[gemini] ${model} hit its quota; failing over to ${next}`);
+              progress(
+                perDay
+                  ? `${shortModel(model)} used its daily free quota${resetText ? ` (resets in ${resetText})` : ""} — trying ${shortModel(next)}`
+                  : `${shortModel(model)} is rate limited${resetText ? ` (clears in ${resetText})` : ""} — trying ${shortModel(next)}`,
+              );
               continue modelLoop;
             }
           }
@@ -944,6 +949,9 @@ export async function runGeminiAgent(opts: {
             console.warn(
               `[gemini] ${model} rate window is ${retryS}s; waiting then retrying same model`,
             );
+            progress(
+              `${shortModel(model)} hit rate limits (clears in ${resetText ?? "a moment"}) — waiting it out, not wasting quota elsewhere`,
+            );
             quotaWaitMs += waitMs;
             await measureTiming("retry_wait", () => sleep(waitMs), model);
             continue;
@@ -952,6 +960,11 @@ export async function runGeminiAgent(opts: {
           const next = nextModel(model);
           if (next) {
             console.warn(`[gemini] ${model} hit its quota; failing over to ${next}`);
+            progress(
+              perDay
+                ? `${shortModel(model)} used its daily free quota${resetText ? ` (resets in ${resetText})` : ""} — trying ${shortModel(next)}`
+                : `${shortModel(model)} is rate limited${resetText ? ` (clears in ${resetText})` : ""} — trying ${shortModel(next)}`,
+            );
             continue modelLoop;
           }
           return atCapacity();
@@ -966,6 +979,7 @@ export async function runGeminiAgent(opts: {
           const next = nextModel(model);
           if (next) {
             console.warn(`[gemini] ${model} overloaded; failing over to ${next}`);
+            progress(`${shortModel(model)} is overloaded right now — trying ${shortModel(next)}`);
             continue modelLoop;
           }
           return atCapacity();
@@ -990,8 +1004,14 @@ export async function runGeminiAgent(opts: {
           if (Object.keys(toolCounts).length === 0) {
             const waitMs = Math.min(2 ** attempt, 8) * 1000;
             if (interactive && waitMs >= remainingMs()) return timeLimitReply(model);
+            const hiccup = /\b504\b|deadline/i.test(msg)
+              ? "hit its deadline before answering"
+              : "dropped mid-request";
             console.warn(
               `[gemini] transient error; retry ${attempt + 1}/${MAX_ATTEMPTS - 1} in ${waitMs}ms`,
+            );
+            progress(
+              `${shortModel(model)} ${hiccup} — retry ${attempt + 1} of ${MAX_ATTEMPTS - 1}`,
             );
             await measureTiming("retry_wait", () => sleep(waitMs), model);
             continue;
@@ -999,6 +1019,7 @@ export async function runGeminiAgent(opts: {
           const next = nextModel(model);
           if (next) {
             console.warn(`[gemini] ${model} transient after tools ran; failing over to ${next}`);
+            progress(`${shortModel(model)} hiccuped mid-run — trying ${shortModel(next)}`);
             continue modelLoop;
           }
         }

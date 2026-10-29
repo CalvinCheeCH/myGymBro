@@ -408,6 +408,44 @@ const run = (extra = {}) =>
   runGeminiAgent({ userMessage: "What should I train today?", chatId: `chat-${caseId}`, ...extra });
 const waits = () => timings.filter(({ stage }) => stage === "retry_wait");
 
+test("runGeminiAgent: failover decisions are reported as one chat-friendly progress line", async () => {
+  const short = (id) => id.replace(/^gemini-/, "");
+  const [primary, fallback, third] = [
+    testConfig.geminiHeavyModels[0],
+    `gemini-case-${caseId}-fallback`,
+    `gemini-case-${caseId}-third`,
+  ];
+  testConfig.geminiHeavyModels.push(fallback, third);
+  const lines = [];
+  steps = [
+    new Error(
+      "429 RESOURCE_EXHAUSTED: GenerateRequestsPerDayPerProjectPerModel-FreeTier quota exceeded on " +
+        "Free Tier. Please retry in 17h2m35.58441243s.",
+    ),
+    new Error("503 UNAVAILABLE: high demand. Spikes in demand are usually temporary."),
+    answer("Third model answered."),
+  ];
+  const result = await run({ onProgress: (line) => lines.push(line) });
+  assert.equal(result.text, "Third model answered.");
+  assert.deepEqual(lines, [
+    `${short(primary)} used its daily free quota (resets in about 17 hours) — trying ${short(fallback)}`,
+    `${short(fallback)} is overloaded right now — trying ${short(third)}`,
+  ]);
+});
+
+test("runGeminiAgent: short rate windows report the wait instead of leaving the chat silent", async () => {
+  const lines = [];
+  steps = [quota(1), quota(1)];
+  assert.match((await run({ onProgress: (line) => lines.push(line) })).text, /at capacity/);
+  assert.deepEqual(
+    waits().map(({ durationMs }) => durationMs),
+    [1500],
+  );
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /clears in less than a minute/);
+  assert.match(lines[0], /waiting it out/);
+});
+
 test("runGeminiAgent: healthy requests keep their single model call and record stages", async () => {
   steps = [answer("Upper body today.")];
   assert.equal((await run()).text, "Upper body today.");

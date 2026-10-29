@@ -28,6 +28,7 @@ import { clearSession, evictExpired } from "./agent/sessions.js";
 import { executeCoachTool } from "./agent/tooling.js";
 import { googleCalendarConfigured } from "./calendar/status.js";
 import { type AlbumItem, mergeAlbum } from "./channel/album.js";
+import { classifyError } from "./channel/errors.js";
 import { releaseChatIntake, withChatIntake } from "./channel/intake.js";
 import { registerBot, sendMessage } from "./channel/notify.js";
 import { isAllowed } from "./channel/permissions.js";
@@ -311,6 +312,77 @@ function clearRapidLedger(chatId: string): void {
 
 loadRapidLedgers();
 
+// ─── Live run status ─────────────────────────────────────────────────
+//
+// A run that has to walk the whole model chain (emptied free-tier quotas,
+// overloaded models, hung requests) can grind for minutes in near silence:
+// only a typing indicator, which users rightly misread as a broken bot.
+// The engines report each failover decision through onProgress; this reporter
+// turns those events into one Telegram "still working" update after the first
+// quiet stretch, then refreshes it with new bullet lines if the walk keeps
+// going. Capped so a truly cursed run cannot flood the chat.
+
+const STATUS_FIRST_UPDATE_MS = 20_000;
+const STATUS_REFRESH_MS = 30_000;
+const MAX_STATUS_UPDATES = 3;
+const MAX_STATUS_LINES = 4;
+
+function buildStatusMessage(lines: string[]): string {
+  const shown = lines.slice(-MAX_STATUS_LINES);
+  return [
+    "Still working on it — here's what's happening:",
+    ...shown.map((line) => `- ${line}`),
+    "I'll send the result as soon as it lands.",
+  ].join("\n");
+}
+
+function startRunStatus(replyTo: (text: string) => Promise<void>) {
+  const lines: string[] = [];
+  let firstTimer: NodeJS.Timeout | null = null;
+  let refreshTimer: NodeJS.Timeout | null = null;
+  let failsafe: NodeJS.Timeout | null = null;
+  let updateCount = 0;
+  let shownLines = 0;
+  let stopped = false;
+  const stopAllTimers = () => {
+    for (const timer of [firstTimer, refreshTimer, failsafe]) {
+      if (timer) {
+        clearTimeout(timer);
+        clearInterval(timer);
+      }
+    }
+    firstTimer = null;
+    refreshTimer = null;
+    failsafe = null;
+  };
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    stopAllTimers();
+  };
+  const dispatch = () => {
+    if (stopped || updateCount >= MAX_STATUS_UPDATES) return;
+    if (lines.length === shownLines) return;
+    shownLines = lines.length;
+    updateCount++;
+    void replyTo(buildStatusMessage(lines)).catch(() => {});
+  };
+  return {
+    push: (line: string) => {
+      if (!stopped) lines.push(line);
+    },
+    start: () => {
+      if (stopped) return;
+      firstTimer = setTimeout(dispatch, STATUS_FIRST_UPDATE_MS);
+      refreshTimer = setInterval(dispatch, STATUS_REFRESH_MS);
+      // Failsafe: the run path always stops this, but never leak an interval.
+      failsafe = setTimeout(stop, 15 * 60_000);
+    },
+    stop,
+    lines,
+  };
+}
+
 // Session timing and rapid/background helpers (isSessionFinal,
 // isRapidFireLog) live in agent/classify.ts so they are unit-testable; the
 // per-chat chain below is the runtime half.
@@ -464,15 +536,24 @@ async function handle(opts: {
 
   // Join the shared queue so messages and scheduled work cannot overlap a chat
   // session, and provider concurrency remains bounded.
+  const runStatus = startRunStatus(replyTo);
   const reportFailure = async (err: any) => {
     clearInterval(typingTimer);
+    runStatus.stop();
     console.error("[index] Agent error:", err?.message, err?.stack);
-    await replyTo(
+    let message =
       err instanceof QueueFullError
         ? "I have too many requests queued. Please try again shortly."
-        : classifyError(err?.message ?? "unknown error"),
-    );
+        : classifyError(err?.message ?? "unknown error");
+    if (runStatus.lines.length) {
+      message += `\n\nWhat happened on this attempt:\n${runStatus.lines
+        .slice(-MAX_STATUS_LINES)
+        .map((line) => `- ${line}`)
+        .join("\n")}`;
+    }
+    await replyTo(message);
   };
+  runStatus.start();
   try {
     await admitChatRun(
       chatId,
@@ -486,12 +567,13 @@ async function handle(opts: {
               userLabel,
               modelTier,
               attachments,
-              onProgress: undefined,
+              onProgress: runStatus.push,
             }),
           );
           const responseText = isCurrentQuestion()
             ? response.text
             : parseQuickChoices(response.text).text;
+          runStatus.stop();
           await replyTo(responseText || "(no response)");
           if (final && !response.incomplete) sessionStarts.delete(chatId);
           if (final && !response.incomplete) clearRapidLedger(chatId);
@@ -507,22 +589,8 @@ async function handle(opts: {
     await reportFailure(err);
   } finally {
     clearInterval(typingTimer);
+    runStatus.stop();
   }
-}
-
-function classifyError(msg: string): string {
-  const lower = msg.toLowerCase();
-  if (lower.includes("workspace reset"))
-    return "Workspace reset is in progress. Send your message again when it finishes.";
-  if (lower.includes("usage limit") || lower.includes("credit balance is too low"))
-    return "I have hit the Claude subscription usage limit. It resets on a rolling window, so try again shortly.";
-  if (lower.includes("timeout") || lower.includes("timed out"))
-    return "That took too long and timed out. Worth trying again.";
-  if (lower.includes("max_turns") || lower.includes("max turns"))
-    return "That request got too involved for one go. Try breaking it into smaller asks.";
-  if (lower.includes("notion"))
-    return "I am having trouble reaching Notion right now. Check the integration token and that the page is shared with it, then try again.";
-  return "Something went wrong handling that. I have logged the details. Try again in a moment.";
 }
 
 // ─── Album buffer ──────────────────────────────────────────────────────
