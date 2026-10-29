@@ -575,6 +575,17 @@ test("real unknown slash commands reject locally instead of starting an agent ru
   assert.ok(replies.some((reply) => /I don't know "\/cmmands"/.test(reply.text)));
 });
 
+test("real goals command maps to the profile prompt and appends the user's words", async () => {
+  resetWork();
+  await dispatch("42", "/goals");
+  assert.equal(models.length, 1);
+  assert.match(models[0].userMessage, /^Update my profile \(PERSONAL\.md\)/);
+  await dispatch("42", "/goals lower back first, bodyweight skills over barbell");
+  assert.equal(models.length, 2);
+  assert.match(models[1].userMessage, /preserv/i);
+  assert.match(models[1].userMessage, /lower back first, bodyweight skills over barbell$/);
+});
+
 test("real slow foodlib read releases intake so commands remain responsive", async () => {
   resetWork();
   const lookup = deferred();

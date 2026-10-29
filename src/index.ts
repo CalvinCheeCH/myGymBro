@@ -102,7 +102,7 @@ function admitChatRun<T>(chatId: string, task: () => Promise<T>, releaseIntake =
 const COMMAND_PROMPTS: Record<string, string> = {
   start:
     "Introduce yourself briefly as my fitness coach and tell me how to use you: I can log workouts in plain language, ask what to train, ask for a weekly plan, ask for nutrition advice, or use /report for a weekly card and /report monthly for a monthly review. Keep it short and welcoming.",
-  help: "List what you can help me with: logging workouts (including photos of meals, food labels, or progress pictures), recommending today's session, planning my week, nutrition advice, weekly report cards (/report), monthly reviews (/report monthly), written progress reports (/progress), browsing my food library (/foodlib), switching voices (/persona) and making custom ones (/create), and reminders. Mention that /new starts a fresh conversation. Keep it concise.",
+  help: "List what you can help me with: logging workouts (including photos of meals, food labels, or progress pictures), recommending today's session, planning my week, nutrition advice, weekly report cards (/report), monthly reviews (/report monthly), written progress reports (/progress), browsing my food library (/foodlib), updating my goals and profile (/goals), switching voices (/persona) and making custom ones (/create), and reminders. Mention that /new starts a fresh conversation. Keep it concise.",
   setup:
     "Set up or repair my Notion training workspace, including its databases, Knowledge Base, canonical Exercise Library note, Training Calendar, and Dashboard. Run the idempotent workspace setup, then confirm what exists and how the exercise catalog is populated from my logged history.",
   log: "I want to log a workout. Ask me what I did if I have not already told you.",
@@ -113,6 +113,8 @@ const COMMAND_PROMPTS: Record<string, string> = {
     'Show me a table of everything in my Food Library: run `node scripts/notion.mjs lookup --db "Food Library" --limit 50` with no --contains so it lists all rows, then render one row per food as: Name | Category | Protein | Calories. If the library is empty, say so in one line and offer to file the first label.',
   create:
     "Help me create a custom coach voice. First ask what it should sound like if I have not said yet (one round of questions at most: the vibe, an example line, a name for it). Then write it to PERSONAS.md in the repo root, creating the file if needed, using exactly this shape per voice: a `## <id>` heading where id is lowercase letters, numbers and dashes only, then a `Name:` line, then a `Voice:` line with 2-4 sentences of voice instruction, preserving every other section byte-for-byte. Rules: voice changes tone and delivery only, coaching judgement, knowledge, tools, and safety rules never change, and built-in ids (arnold, yoda, sherlock, stark, gandalf, dwight, sparrow, batman, normal) cannot be reused. Confirm in one line and tell me to try it with `/persona <id>`.",
+  goals:
+    "Update my profile (PERSONAL.md). If I have not yet said what is changing, ask once what to change (new goals, training focus, diet, schedule, equipment, injuries) with one round of questions at most. Then read PERSONAL.md, write back the full file with only the affected lines changed, preserving every other line byte-for-byte, and never invent placeholder goals or targets. Confirm in one line what you changed. If PERSONAL.md does not exist yet, create it from exactly what I told you, nothing more.",
 };
 
 // ─── /commands ───────────────────────────────────────────────────────
@@ -132,6 +134,7 @@ const BOT_COMMANDS: Array<{ cmd: string; desc: string }> = [
   { cmd: "/new", desc: "clear chat, start fresh (/reset works too)" },
   { cmd: "/resetdata", desc: "preview and clear workout data and weekly plans (keeps libraries)" },
   { cmd: "/setup", desc: "(re)create the Notion workspace" },
+  { cmd: "/goals", desc: "review and update your goals and profile (PERSONAL.md)" },
   { cmd: "/start, /help", desc: "intro and what I can do" },
   { cmd: "/commands", desc: "this list" },
   { cmd: "/persona", desc: "list voices or switch yours" },
