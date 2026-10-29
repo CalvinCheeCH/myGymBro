@@ -51,6 +51,20 @@ export const config = {
     60_000,
     2_147_483_647,
   ),
+  // Heavy-context runs (coaching, questions, plans, photos/PDFs — anything
+  // routed to the heavy chain) get their own, much larger budgets so long
+  // generations such as photo calorie analysis are not cut off mid-work by
+  // the fast-tier timings.
+  geminiHeavyRequestTimeoutMs: parsePositiveInteger(
+    "GEMINI_HEAVY_REQUEST_TIMEOUT_MS",
+    120_000,
+    2_147_483_647,
+  ),
+  geminiHeavyResponseTimeoutMs: parsePositiveInteger(
+    "GEMINI_HEAVY_RESPONSE_TIMEOUT_MS",
+    600_000,
+    2_147_483_647,
+  ),
   // Defaults list only ids confirmed to exist for new free keys; at runtime the
   // engine asks the key for its full model list (ListModels) and appends every
   // other capable model it finds, so extra generations are used when available

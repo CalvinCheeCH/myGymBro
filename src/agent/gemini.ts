@@ -629,10 +629,12 @@ export async function runGeminiAgent(opts: {
   // Context-based routing: heavy models coach, plan, advise, and see photos;
   // light models take quick transactional logs. Attachments always go heavy.
   // GEMINI_SMART_ROUTING=false pins everything to the heavy chain.
-  const chain =
-    config.geminiSmartRouting && modelTier === "fast" && (attachments?.length ?? 0) === 0
-      ? config.geminiLightModels
-      : config.geminiHeavyModels;
+  // Context-based routing: heavy models coach, plan, advise, and see photos;
+  // light models take quick transactional logs. Attachments always go heavy.
+  // GEMINI_SMART_ROUTING=false pins everything to the heavy chain.
+  const usesLightChain =
+    config.geminiSmartRouting && modelTier === "fast" && (attachments?.length ?? 0) === 0;
+  const chain = usesLightChain ? config.geminiLightModels : config.geminiHeavyModels;
   const maxTurns = modelTier === "fast" ? 15 : 40;
 
   const now = new Date().toLocaleString("en-GB", { timeZone: config.timezone });
@@ -643,8 +645,16 @@ export async function runGeminiAgent(opts: {
   const source = userLabel === "scheduled task" ? "scheduled" : "telegram";
   const startedAt = Date.now();
   const interactive = source === "telegram";
-  const requestLimitMs = config.geminiRequestTimeoutMs ?? 20_000;
-  const responseLimitMs = config.geminiResponseTimeoutMs ?? 60_000;
+  // Heavy-context runs (plans, questions, photos, PDFs, voice transcripts on
+  // the standard tier — anything routed to the heavy chain) may take minutes
+  // per call, so they run on their own larger budgets. Fast-tier transactional
+  // logs keep the snappy defaults so trivial logging never stalls a chat.
+  const requestLimitMs = usesLightChain
+    ? (config.geminiRequestTimeoutMs ?? 20_000)
+    : (config.geminiHeavyRequestTimeoutMs ?? 120_000);
+  const responseLimitMs = usesLightChain
+    ? (config.geminiResponseTimeoutMs ?? 60_000)
+    : (config.geminiHeavyResponseTimeoutMs ?? 600_000);
   const remainingMs = () => responseLimitMs - (Date.now() - startedAt);
   let totalRequests = 0;
   const toolCounts: Record<string, number> = {};

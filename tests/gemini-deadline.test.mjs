@@ -18,6 +18,8 @@ const testConfig = {
   geminiLightModels: [],
   geminiRequestTimeoutMs: 20_000,
   geminiResponseTimeoutMs: 60_000,
+  geminiHeavyRequestTimeoutMs: 20_000,
+  geminiHeavyResponseTimeoutMs: 60_000,
 };
 const generationCalls = [];
 const discoveryCalls = [];
@@ -93,6 +95,9 @@ beforeEach((context) => {
   testConfig.geminiHeavyModels = [`gemini-deadline-${caseId}-primary`];
   testConfig.geminiRequestTimeoutMs = 20_000;
   testConfig.geminiResponseTimeoutMs = 60_000;
+  testConfig.geminiHeavyRequestTimeoutMs = 20_000;
+  testConfig.geminiHeavyResponseTimeoutMs = 60_000;
+  testConfig.geminiSmartRouting = false;
   steps = [];
   listHandler = undefined;
   toolHandler = undefined;
@@ -130,12 +135,12 @@ const run = (extra = {}) =>
     ...extra,
   });
 const waits = () => timings.filter(({ stage }) => stage === "retry_wait");
-const assertDeadline = (args, timeout) => {
+const assertDeadline = (args, timeout, message) => {
   assert.ok(
     args.config.abortSignal instanceof AbortSignal,
     "SDK must receive a cancellable signal",
   );
-  assert.equal(args.config.httpOptions.timeout, Math.max(10_000, timeout));
+  assert.equal(args.config.httpOptions.timeout, Math.max(10_000, timeout), message);
   assert.equal(
     args.config.httpOptions.retryOptions.attempts,
     1,
@@ -157,6 +162,14 @@ const waitForAbort = (signal) =>
     else signal.addEventListener("abort", abort, { once: true });
   });
 
+/** A run with smart routing off is on the heavy chain: set both budget pairs. */
+const setBudgets = (requestMs, responseMs) => {
+  testConfig.geminiRequestTimeoutMs = requestMs;
+  testConfig.geminiResponseTimeoutMs = responseMs;
+  testConfig.geminiHeavyRequestTimeoutMs = requestMs;
+  testConfig.geminiHeavyResponseTimeoutMs = responseMs;
+};
+
 test("Gemini interactive discovery and generation send bounded cancellable SDK requests without hidden retries", async () => {
   steps = [answer()];
   assert.equal((await run()).text, "Ready.");
@@ -168,6 +181,56 @@ test("Gemini interactive discovery and generation send bounded cancellable SDK r
     generationCalls[0].config.abortSignal.aborted,
     false,
     "successful calls clear their deadline timer",
+  );
+});
+
+test("Gemini heavy-context runs get their own larger request and response budgets", async () => {
+  testConfig.geminiHeavyRequestTimeoutMs = 120_000;
+  testConfig.geminiHeavyResponseTimeoutMs = 600_000;
+  const entered = deferred();
+  steps = [
+    (args) => {
+      entered.resolve();
+      return waitForAbort(args.config.abortSignal);
+    },
+  ];
+  const startedAt = Date.now();
+  const pending = run();
+  await entered.promise;
+  assertDeadline(generationCalls[0], 120_000);
+  assert.equal(generationCalls[0].config.httpOptions.timeout, 120_000);
+  timerContext.mock.timers.tick(119_999);
+  assert.equal(
+    generationCalls[0].config.abortSignal.aborted,
+    false,
+    "a heavy generation must keep running past the fast-tier limit",
+  );
+  timerContext.mock.timers.tick(1);
+  const result = await pending;
+  assert.equal(result.incomplete, true);
+  assert.match(result.text, /time limit/i);
+  assert.equal(Date.now() - startedAt, 120_000);
+  assert.equal(generationCalls[0].config.abortSignal.aborted, true);
+  assert.equal(waits().length, 0);
+});
+
+test("Gemini smart routing keeps quick logs on the fast budget and upgrades photo runs to the heavy budget", async () => {
+  testConfig.geminiSmartRouting = true;
+  testConfig.geminiHeavyRequestTimeoutMs = 120_000;
+  testConfig.geminiHeavyResponseTimeoutMs = 600_000;
+  testConfig.geminiLightModels = [`gemini-deadline-${caseId}-light`];
+  steps = [answer("Logged."), answer("Analysed the meal photo.")];
+  await run({ modelTier: "fast", userMessage: "just ate chicken and rice" });
+  assertDeadline(generationCalls[0], 20_000, "quick logs keep the fast-tier budget");
+  await run({
+    modelTier: "fast",
+    userMessage: "Work out the calories in this.",
+    attachments: [{ mediaType: "image/jpeg", data: "aGVsbG8=" }],
+  });
+  assertDeadline(
+    generationCalls[1],
+    120_000,
+    "photo runs ride the heavy chain and its larger budget",
   );
 });
 
@@ -262,6 +325,7 @@ test("Gemini total interactive budget includes model discovery and reduces the r
     return (async function* () {})();
   };
   testConfig.geminiResponseTimeoutMs = 13_000;
+  testConfig.geminiHeavyResponseTimeoutMs = 13_000;
   steps = [answer()];
   assert.equal((await run()).text, "Ready.");
   assertDeadline(discoveryCalls[0], 5000);
@@ -361,6 +425,8 @@ test("Gemini scheduled tasks retain unrestricted model and tool durations", asyn
 test("Gemini configured sub-10s requests advertise a valid server deadline and still abort at the configured millisecond limit", async () => {
   testConfig.geminiRequestTimeoutMs = 1250;
   testConfig.geminiResponseTimeoutMs = 3000;
+  testConfig.geminiHeavyRequestTimeoutMs = 1250;
+  testConfig.geminiHeavyResponseTimeoutMs = 3000;
   const entered = deferred();
   steps = [
     (args) => {
@@ -387,6 +453,7 @@ test("Gemini configured sub-10s requests advertise a valid server deadline and s
 
 test("Gemini final fallback with 6s remaining advertises 10s but keeps the total response budget and completed save", async () => {
   testConfig.geminiResponseTimeoutMs = 44_000;
+  testConfig.geminiHeavyResponseTimeoutMs = 44_000;
   testConfig.geminiHeavyModels.push(
     `gemini-deadline-${caseId}-second`,
     `gemini-deadline-${caseId}-third`,
@@ -480,7 +547,7 @@ test("Gemini total budget stops a chain of stalled fallbacks at 60 seconds", asy
 });
 
 test("Gemini does not start a quota retry sleep that would exhaust its remaining response budget", async () => {
-  testConfig.geminiResponseTimeoutMs = 1000;
+  setBudgets(20_000, 1000);
   steps = [new Error("429 RESOURCE_EXHAUSTED: Please retry in 1s.")];
   const startedAt = Date.now();
   const result = await run();
@@ -492,7 +559,7 @@ test("Gemini does not start a quota retry sleep that would exhaust its remaining
 });
 
 test("Gemini does not start a transient retry sleep that would exhaust its remaining response budget", async () => {
-  testConfig.geminiResponseTimeoutMs = 1000;
+  setBudgets(20_000, 1000);
   steps = [new Error("fetch failed")];
   const result = await run();
   assert.equal(result.incomplete, true);
@@ -502,7 +569,7 @@ test("Gemini does not start a transient retry sleep that would exhaust its remai
 });
 
 test("Gemini does not execute tool calls from a model response arriving after its time budget", async () => {
-  testConfig.geminiRequestTimeoutMs = 65_000;
+  setBudgets(65_000, 60_000);
   steps = [
     () => {
       timerContext.mock.timers.tick(60_000);

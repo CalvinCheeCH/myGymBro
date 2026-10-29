@@ -557,6 +557,24 @@ test("real bare foodlib command reads the saved library directly without a model
   assert.ok(replies.some((reply) => reply.text.includes("Synthetic food")));
 });
 
+test("real unknown slash commands reject locally instead of starting an agent run", async () => {
+  resetWork();
+  typingWork = () => {
+    throw new Error("No typing action or model work expected");
+  };
+  await dispatch("42", "/command");
+  assert.equal(models.length, 0);
+  assert.ok(
+    replies.some(
+      (reply) => /I don't know "\/command"/.test(reply.text) && /\/commands/.test(reply.text),
+    ),
+  );
+  // A bot-suffixed variant must reject the same way.
+  await dispatch("42", "/cmmands@SyntheticBot");
+  assert.equal(models.length, 0);
+  assert.ok(replies.some((reply) => /I don't know "\/cmmands"/.test(reply.text)));
+});
+
 test("real slow foodlib read releases intake so commands remain responsive", async () => {
   resetWork();
   const lookup = deferred();

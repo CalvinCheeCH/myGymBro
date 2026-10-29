@@ -987,7 +987,18 @@ bot.on("message", async (ctx) => {
     }
 
     const mapped = COMMAND_PROMPTS[cmd];
-    if (mapped) text = rest ? `${mapped}\n\n${rest}` : mapped;
+    if (mapped) {
+      text = rest ? `${mapped}\n\n${rest}` : mapped;
+    } else {
+      // Unknown slash command. Every command above matched something; a typo
+      // like "/command" would otherwise become a full agent run (heavy chain,
+      // model quota, failover walk — minutes of silence) just to hear "that's
+      // not a command". Reject it locally: instant, no AI call.
+      await replyTo(
+        `I don't know ${cmd ? `"/${cmd}"` : "that command"}. Try /commands for the full list, or just write naturally.`,
+      );
+      return;
+    }
   }
 
   const attachments = await measureTiming("media_download", () => collectAttachments(ctx.message));

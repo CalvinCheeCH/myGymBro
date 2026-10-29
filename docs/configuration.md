@@ -37,24 +37,27 @@ default. See the official [conversation state guide](https://developers.openai.c
 
 | Variable | Default | What it is |
 |---|---|---|
-| `GEMINI_REQUEST_TIMEOUT_MS` | `20000` | Maximum time for one interactive Gemini generation call, in milliseconds. A timed-out call is cancelled and another eligible model is tried within the remaining response budget. |
-| `GEMINI_RESPONSE_TIMEOUT_MS` | `60000` | Interactive wall-time budget after the agent starts. Includes model calls, discovery, retries and tools; excludes earlier queue waiting and Telegram delivery. |
+| `GEMINI_REQUEST_TIMEOUT_MS` | `20000` | Maximum time for one interactive Gemini generation call on the fast tier (quick transactional logs), in milliseconds. A timed-out call is cancelled and another eligible model is tried within the remaining response budget. |
+| `GEMINI_RESPONSE_TIMEOUT_MS` | `60000` | Interactive wall-time budget for a fast-tier run after the agent starts. Includes model calls, discovery, retries and tools; excludes earlier queue waiting and Telegram delivery. |
+| `GEMINI_HEAVY_REQUEST_TIMEOUT_MS` | `120000` | Same as `GEMINI_REQUEST_TIMEOUT_MS`, but for heavy-context runs: coaching, planning, questions, photos, PDFs, and anything else routed to the heavy chain. |
+| `GEMINI_HEAVY_RESPONSE_TIMEOUT_MS` | `600000` | Same as `GEMINI_RESPONSE_TIMEOUT_MS`, but for heavy-context runs. Ten minutes lets long generations (e.g. meal-photo calorie analysis) finish instead of being cut off by the fast-tier limits. |
 
-Both settings must be positive whole milliseconds, no greater than `2147483647`.
-Model discovery has a five-second cap or the remaining budget, whichever is
-shorter. The SDK advertises at least a ten-second server deadline to satisfy
-Gemini, while a separate local cancellation signal still enforces any shorter
-configured or remaining time limit. Interactive SDK retries are disabled; the
-bot owns retry/fallback timing.
-Scheduled tasks keep their existing policy.
+All four settings must be positive whole milliseconds, no greater than
+`2147483647`. Model discovery has a five-second cap or the remaining budget,
+whichever is shorter. The SDK advertises at least a ten-second server deadline
+to satisfy Gemini, while a separate local cancellation signal still enforces any
+shorter configured or remaining time limit. Interactive SDK retries are
+disabled; the bot owns retry/fallback timing. Scheduled tasks keep their
+existing policy.
 
 A running workspace save is allowed to finish even if it crosses the response
 budget. The coach then stops starting new steps, preserves completed tool results,
 and reports that the full request is unfinished. Remaining tools from the same
 model response receive explicit skipped results. Workout completion retains its
 local set ledger on an incomplete reply, so a later continuation can use it.
-These are safe work limits, not a guarantee of a full reply within 60 seconds:
-queue waiting, a running save, and Telegram delivery can add time.
+These are safe work limits, not a guarantee of a full reply within the
+configured budget: queue waiting, a running save, and Telegram delivery can
+add time.
 
 ## Notion (optional but recommended)
 
